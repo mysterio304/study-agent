@@ -19,6 +19,7 @@ from aiogram.exceptions import TelegramAPIError
 from agent.canvas.api import CanvasAPI
 from agent.canvas.client import CanvasClient, CanvasError
 from agent.config import ConfigError, Settings, get_settings
+from agent.voice.elevenlabs import ElevenLabs, VoiceError
 
 
 def _out(line: str) -> None:
@@ -53,11 +54,26 @@ async def check_anthropic(s: Settings) -> str:
     return "models available: " + ", ".join(found)
 
 
+async def check_elevenlabs(s: Settings) -> str:
+    if s.elevenlabs_api_key is None:
+        return "not configured (voice disabled)"
+    el = ElevenLabs(
+        s.elevenlabs_api_key.get_secret_value(),
+        stt_model=s.elevenlabs_stt_model,
+        tts_model=s.elevenlabs_tts_model,
+        voice_id=s.elevenlabs_voice_id,
+    )
+    try:
+        return await el.describe()
+    finally:
+        await el.aclose()
+
+
 async def _run(name: str, fn: Callable[[Settings], Awaitable[str]], s: Settings) -> bool:
     try:
         _out(f"✅ {name}: {await fn(s)}")
         return True
-    except (TelegramAPIError, CanvasError, anthropic.APIError) as exc:
+    except (TelegramAPIError, CanvasError, anthropic.APIError, VoiceError) as exc:
         detail = getattr(exc, "status", None) or getattr(exc, "status_code", None) or ""
         _out(f"❌ {name}: {type(exc).__name__} {detail}".rstrip())
     except Exception as exc:  # network errors etc. — type only, never the message (may echo URLs)
@@ -77,6 +93,7 @@ async def main() -> int:
         await _run("telegram", check_telegram, settings),
         await _run("canvas", check_canvas, settings),
         await _run("anthropic", check_anthropic, settings),
+        await _run("elevenlabs", check_elevenlabs, settings),
     ]
     return 0 if all(results) else 1
 

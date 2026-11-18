@@ -14,7 +14,7 @@ from typing import Protocol
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
 
 log = logging.getLogger(__name__)
 TELEGRAM_LIMIT = 4000
@@ -22,6 +22,7 @@ TELEGRAM_LIMIT = 4000
 
 class Notifier(Protocol):
     async def send(self, text: str, kb: InlineKeyboardMarkup | None = None) -> int | None: ...
+    async def send_voice(self, audio: bytes, caption: str | None = None) -> int | None: ...
 
 
 def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
@@ -53,6 +54,16 @@ class TelegramNotifier:
                 return None
         return msg_id
 
+    async def send_voice(self, audio: bytes, caption: str | None = None) -> int | None:
+        try:
+            msg = await self._bot.send_voice(
+                self._owner, BufferedInputFile(audio, filename="voice.ogg"), caption=caption
+            )
+        except TelegramAPIError:
+            log.exception("Failed to send voice message")
+            return None
+        return msg.message_id
+
 
 class ConsoleNotifier:
     """Prints messages (HTML tags stripped) — used by dry-run demos."""
@@ -64,3 +75,7 @@ class ConsoleNotifier:
             buttons = "\n  " + "  ".join(f"[{b.text}]" for row in kb.inline_keyboard for b in row)
         sys.stdout.write(f"\n── bot ──\n{plain}{buttons}\n")
         return 0  # "delivered" (callers treat None as a failed send)
+
+    async def send_voice(self, audio: bytes, caption: str | None = None) -> int | None:
+        sys.stdout.write(f"\n── bot (🎙 voice, {len(audio)} bytes) ──\n{caption or ''}\n")
+        return 0

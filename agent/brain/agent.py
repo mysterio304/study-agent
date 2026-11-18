@@ -49,6 +49,7 @@ class TurnResult:
     model: str | None = None
     steps: int = 0
     cost_usd: float = 0.0
+    voice_text: str | None = None  # set when the agent called reply_with_voice
 
 
 class Agent:
@@ -91,6 +92,7 @@ class Agent:
                     "Сообщение слишком длинное для одного ответа — сократи, пожалуйста."
                 )
         result.proposals = ctx.proposals
+        result.voice_text = ctx.voice_text
         async with self._sm() as s:
             await save_message(s, "assistant", result.text, self._clock)
             await s.commit()

@@ -24,6 +24,10 @@ class Recorder:
         self.messages.append((text, kb))
         return len(self.messages)
 
+    async def send_voice(self, audio: bytes, caption: str | None = None) -> int:
+        self.messages.append((f"[voice] {caption or ''}", None))
+        return len(self.messages)
+
     def texts(self) -> list[str]:
         return [t for t, _ in self.messages]
 

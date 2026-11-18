@@ -170,3 +170,44 @@ def block_ping(b: Block, exam: str, topic: str, zone: ZoneInfo, nth: int) -> str
     if nth == 1:
         return f"Напоминаю: блок {what} уже идёт 15 минут."
     return f"Похоже, блок {what} не состоялся. Перенести его?"
+
+
+async def morning_brief_text(session: AsyncSession, settings: Settings, clock: Clock) -> str:
+    """Speakable 1–3 sentence brief for the optional morning voice message (template, no LLM)."""
+    zone, today = settings.zone, clock.today()
+    start = local_day_start_for(today, settings)
+    blocks = (
+        await session.scalars(
+            select(Block)
+            .where(
+                Block.starts_at >= start,
+                Block.starts_at < start + timedelta(days=1),
+                Block.status == "planned",
+            )
+            .order_by(Block.starts_at)
+        )
+    ).all()
+    parts = ["Доброе утро!"]
+    if blocks:
+        first = blocks[0]
+        exam = await session.get(Exam, first.exam_id)
+        topic = await session.get(Topic, first.topic_id) if first.topic_id else None
+        what = f"{short_exam(exam.title) if exam else ''}, {topic.name if topic else 'пробный экзамен'}"
+        parts.append(
+            f"Сегодня {len(blocks)} блоков, первый в {first.starts_at.astimezone(zone):%H:%M}: {what}."
+        )
+    else:
+        parts.append("Сегодня учебных блоков нет.")
+    upcoming = (
+        await session.scalars(
+            select(Exam).where(Exam.starts_at > clock.now()).order_by(Exam.starts_at)
+        )
+    ).first()
+    if upcoming:
+        days = (upcoming.starts_at.astimezone(zone).date() - today).days
+        parts.append(
+            f"До экзамена {short_exam(upcoming.title)} {days} дней."
+            if days
+            else f"Сегодня экзамен {short_exam(upcoming.title)}. Удачи!"
+        )
+    return " ".join(parts)

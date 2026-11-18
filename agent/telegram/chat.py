@@ -9,7 +9,7 @@ from datetime import timedelta
 from aiogram import F, Router
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from agent.brain.llm import BudgetExceeded
 from agent.db.models import Assignment, Reminder
@@ -18,8 +18,10 @@ from agent.planner.blocks import BlockError, auto_move_missed, set_block_status
 from agent.planner.render import fmt_day
 from agent.planner.service import load_inputs
 from agent.prep import checkin
+from agent.prep.settings_service import effective
 from agent.telegram.format import h
 from agent.telegram.keyboards import BlockCb, CheckinCb, DeadlineCb, PropCb
+from agent.voice.service import wants_voice
 
 log = logging.getLogger(__name__)
 router = Router(name="chat")
@@ -127,7 +129,8 @@ async def on_text(message: Message, svc: Services) -> None:
 
 
 async def handle_user_text(message: Message, svc: Services, text: str, *, via: str) -> None:
-    """Shared by text and (in M4) voice: check-in answer first, otherwise the agent."""
+    """Shared by text and voice: check-in answer first, otherwise the agent. Voice replies are a
+    short gist; the full answer is always sent as text too."""
     if svc.agent is None or svc.llm is None:
         await message.answer(
             "Агент не настроен (нет ANTHROPIC_API_KEY). Команды /today, /plan, /progress работают."
@@ -150,6 +153,28 @@ async def handle_user_text(message: Message, svc: Services, text: str, *, via: s
     finally:
         for pid in result.proposals:  # proposals are already in the DB — always show the cards
             await send_proposal(svc, pid)
+    await _maybe_speak(message, svc, text, result.voice_text, result.text, via=via)
+
+
+async def _maybe_speak(
+    message: Message, svc: Services, user_text: str, voice_text: str | None, reply: str, *, via: str
+) -> None:
+    """Voice out only when asked (tool or «ответь голосом») or in voice mode after voice input."""
+    if svc.voice is None:
+        return
+    if voice_text is None:
+        async with svc.sessionmaker() as s:
+            voice_mode = bool((await effective(s, svc.settings))["voice_mode"])
+        if not (wants_voice(user_text) or (via == "voice" and voice_mode)):
+            return
+    try:  # voice is a bonus, sent after the text: nothing here may break the turn
+        audio, notice = await svc.voice.speak(voice_text or reply)
+        if audio:
+            await message.answer_voice(BufferedInputFile(audio, filename="reply.ogg"))
+        if notice:
+            await message.answer(h(notice))
+    except Exception:
+        log.exception("Voice reply failed")
 
 
 async def _try_checkin(message: Message, svc: Services, text: str) -> bool:

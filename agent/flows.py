@@ -26,6 +26,7 @@ from agent.telegram.cards import proposal_card
 from agent.telegram.format import h
 from agent.telegram.keyboards import rating_kb, topic_review_kb
 from agent.telegram.notifier import Notifier
+from agent.voice.service import VoiceService
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class Services:
     agent: Agent | None = None
     batches: BatchRunner | None = None
     discovery: TopicDiscovery | None = None
+    voice: VoiceService | None = None
 
 
 async def quiet_range(svc: Services) -> TimeRange:

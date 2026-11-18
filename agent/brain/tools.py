@@ -175,6 +175,13 @@ _TOOLS = [
     ),
     Tool("get_usage", "Today's LLM spend vs budget.", _obj({}), h.get_usage),
     Tool(
+        "reply_with_voice",
+        "Also send a short spoken gist (≤ 2 sentences, Russian, no lists) as a voice message. Use when "
+        "the student asks for a voice answer.",
+        _obj({"text": S}, ["text"]),
+        h.reply_with_voice,
+    ),
+    Tool(
         "set_exam_info",
         "Record what the student says about an exam: final_weight (fraction or percent) and/or target_grade.",
         _obj({"exam": S, "final_weight": {"type": "number"}, "target_grade": S}, ["exam"]),
@@ -207,6 +214,7 @@ PROFILES: dict[Profile, tuple[str, ...]] = {
         "manage_topics",
         "propose_plan_change",
         "propose_settings_change",
+        "reply_with_voice",
         "save_agreement",
         "set_exam_info",
         "set_topic_level",
@@ -224,7 +232,13 @@ PROFILES: dict[Profile, tuple[str, ...]] = {
         "propose_undo",
         "save_agreement",
     ),
-    "material": ("escalate", "get_progress", "log_study_session", "set_topic_level"),
+    "material": (
+        "escalate",
+        "get_progress",
+        "log_study_session",
+        "reply_with_voice",
+        "set_topic_level",
+    ),
     "grades": (
         "calc_needed_final",
         "escalate",

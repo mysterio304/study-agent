@@ -4,7 +4,9 @@ A personal AI agent that lives in Telegram, reads my Canvas LMS (read-only), and
 enforces final-exam preparation**. Telegram is only the interface — the core is a Claude
 tool-use agent plus a deterministic planner, with persistent memory and proactive behaviour.
 
-> Status: **Milestone 3 — notifications.** On top of the finals planner and cost-aware agent
+> Status: **Milestone 4 — voice.** Voice notes are transcribed (ElevenLabs Scribe, cached) and
+> handled like text; spoken replies on request, in voice mode, or as a morning brief.
+> Earlier: **Milestone 3 — notifications.** On top of the finals planner and cost-aware agent
 > (M2): Canvas sync with diffing, deadline ladder with buttons, grades with class stats and
 > teacher comments, announcements, new files, inbox, quiet-hours outbox, morning digest, weekly
 > report, and a grade calculator (`/need`).
@@ -63,6 +65,8 @@ uv run python -m agent.cli notify --dry-run # demo: Canvas changes → grade/ann
 | `/undo` | One-tap proposal to restore the previous plan version |
 | `/replan` | Recompute the plan from actual progress (proposal) |
 | `/checkin` | Evening check-in now (answer in free text) |
+| `/voice on\|off`, `/voice brief on\|off` | Voice mode (voice in → voice out); morning voice brief |
+| voice note | Transcribed (shown briefly), then handled like text; «ответь голосом» → spoken gist |
 | `/settings [key value]` | Show settings; change one explicitly (the only way to change 🔒 rules) |
 | free text | The agent: Haiku by default, Sonnet for plan negotiation / complex material |
 
@@ -99,7 +103,8 @@ agent/
   notify/        events, templates, quiet-hours outbox, deadline ladder, jobs, weekly report
   grades/        grade calculator (weighted / points-based) and grade views
   telegram/      whitelist middleware, /start wizard, commands, chat, cards
-  files/ voice/  (upcoming milestones)
+  voice/         ElevenLabs STT/TTS client, OGG/Opus helpers (ffmpeg only if needed), voice service
+  files/         (upcoming milestone)
 tests/           pytest + respx (HTTP mocked)
 fixtures/        synthetic data for --dry-run
 ```

@@ -542,6 +542,14 @@ async def list_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
     )
 
 
+async def reply_with_voice(ctx: ToolContext, args: dict[str, Any]) -> str:
+    text = str(args.get("text") or "").strip()
+    if not text:
+        raise ToolError("text: короткая суть ответа для озвучки")
+    ctx.voice_text = text[:300]
+    return "Voice gist queued; still write the full answer as text (lists/schedules stay in text)."
+
+
 async def escalate(ctx: ToolContext, args: dict[str, Any]) -> str:
     ctx.escalate_reason = str(args.get("reason", "complex"))[:120]
     return "Escalating to the stronger model."

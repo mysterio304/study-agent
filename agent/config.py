@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     elevenlabs_stt_model: str = "scribe_v2"
     elevenlabs_tts_model: str | None = None
     elevenlabs_voice_id: str | None = None
+    tts_daily_char_limit: int = Field(default=3000, ge=0, le=100_000)
 
     # --- Anthropic ----------------------------------------------------------------------------
     anthropic_api_key: SecretStr | None = None

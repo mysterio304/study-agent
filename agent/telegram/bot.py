@@ -9,7 +9,7 @@ from aiogram.types import BotCommand
 
 from agent.config import Settings
 from agent.flows import Services
-from agent.telegram import chat, commands, setup_wizard
+from agent.telegram import chat, commands, setup_wizard, voice
 from agent.telegram.middleware import OwnerOnlyMiddleware
 
 COMMANDS = [
@@ -23,6 +23,7 @@ COMMANDS = [
     BotCommand(command="undo", description="Вернуть прошлую версию плана"),
     BotCommand(command="replan", description="Пересчитать план"),
     BotCommand(command="checkin", description="Вечерний check-in"),
+    BotCommand(command="voice", description="Голос: /voice on|off, /voice brief on|off"),
     BotCommand(command="settings", description="Настройки"),
     BotCommand(command="start", description="Мастер настройки"),
 ]
@@ -40,5 +41,5 @@ def build_dispatcher(settings: Settings, svc: Services) -> Dispatcher:
     assert settings.telegram_owner_id is not None
     dp = Dispatcher(svc=svc)
     dp.update.outer_middleware(OwnerOnlyMiddleware(settings.telegram_owner_id))
-    dp.include_routers(setup_wizard.router, commands.router, chat.router)
+    dp.include_routers(setup_wizard.router, commands.router, voice.router, chat.router)
     return dp

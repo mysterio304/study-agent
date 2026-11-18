@@ -46,7 +46,8 @@ SPECS: dict[str, SettingSpec] = {
         SettingSpec("study_window", "Окно учёбы (HH:MM-HH:MM)", str),
         SettingSpec("quiet_hours", "Тихие часы (HH:MM-HH:MM)", str),
         SettingSpec("lighter_weekday", "Лёгкий день (0=пн … 6=вс)", int, min_value=0, max_value=6),
-        SettingSpec("voice_mode", "Голосовой режим", bool),
+        SettingSpec("voice_mode", "Голосовой режим (голос → голос)", bool),
+        SettingSpec("morning_voice", "Утренний голосовой бриф", bool),
         # Non-negotiables: locked, shown in /settings, never changed by the agent.
         SettingSpec(
             "eve_review_only", "День перед экзаменом — только повторение", bool, locked=True
@@ -69,6 +70,7 @@ def defaults(settings: Settings) -> dict[str, Any]:
         "quiet_hours": settings.quiet_hours,
         "lighter_weekday": 6,
         "voice_mode": False,
+        "morning_voice": False,
         "eve_review_only": True,
         "no_new_topics_eve": True,
         "protected_sleep": True,

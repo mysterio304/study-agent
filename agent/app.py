@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
@@ -28,6 +28,8 @@ from agent.notify.dispatch import summarise
 from agent.prep.discovery import TopicDiscovery
 from agent.prep.seed import seed_exams
 from agent.telegram.notifier import ConsoleNotifier, Notifier
+from agent.voice.elevenlabs import ElevenLabs
+from agent.voice.service import VoiceService
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +44,11 @@ class App:
     dry_run: bool
     svc: Services | None = None
     _sync: CanvasSync | None = field(default=None, repr=False)
+    _closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list, repr=False)
+
+    async def aclose(self) -> None:
+        for close in self._closers:
+            await close()
 
     async def sync_canvas(self) -> None:
         """Scheduled job: full Canvas sync → events → outbox. Never raises into the scheduler
@@ -95,6 +102,21 @@ class App:
                 client.messages.batches, svc.llm, self.sessionmaker, self.settings, self.clock
             )
 
+        if self.settings.elevenlabs_api_key is not None:
+            el = ElevenLabs(
+                self.settings.elevenlabs_api_key.get_secret_value(),
+                stt_model=self.settings.elevenlabs_stt_model,
+                tts_model=self.settings.elevenlabs_tts_model,
+                voice_id=self.settings.elevenlabs_voice_id,
+            )
+            self._closers.append(el.aclose)
+            svc.voice = VoiceService(
+                el,
+                self.sessionmaker,
+                self.clock,
+                tts_daily_char_limit=self.settings.tts_daily_char_limit,
+            )
+
         async def ready(exam_id: int) -> None:
             await on_topics_ready(svc, exam_id)
 
@@ -139,9 +161,11 @@ async def build_app(
         assert settings.canvas_base_url and settings.canvas_token
         client = CanvasClient(settings.canvas_base_url, settings.canvas_token.get_secret_value())
         canvas = CanvasAPI(client)
+    app = App(settings, engine, sm, clock or SystemClock(settings.zone), canvas, dry_run)
     try:
-        yield App(settings, engine, sm, clock or SystemClock(settings.zone), canvas, dry_run)
+        yield app
     finally:
+        await app.aclose()
         if client is not None:
             await client.aclose()
         await engine.dispose()

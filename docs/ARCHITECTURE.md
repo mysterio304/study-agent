@@ -1,6 +1,6 @@
 # Study Agent — Architecture & DB Schema (v2, 2026-11-18)
 
-Status: v1 and v2 approved; M1–M3 implemented.
+Status: v1 and v2 approved; M1–M4 implemented.
 
 ## 1. Guiding decisions
 
@@ -287,3 +287,16 @@ morning 08:30: digest items (new files, new assignments) + plan
 - **Grade calculator**: `x = (target − C·(1−w)) / w`; `w` from a Canvas "Final/Exam" group (weighted),
   an ungraded "final exam" assignment (points), or the exam's known weight; `C` in two scenarios
   (ungraded work at current average / at zero). Labelled as an estimate.
+
+## 13. Voice (M4)
+
+- **Input**: Telegram voice (OGG/Opus, ≤ 5 min) → ElevenLabs `POST /v1/speech-to-text` (`scribe_v2`,
+  sent as-is; MP3 via ffmpeg only if the service rejects the container) → transcript cached by audio
+  SHA-256 (`stt_transcripts`) → echoed briefly → the same path as text (check-in parser or agent).
+- **Output**: only when asked («ответь голосом» or the agent's `reply_with_voice` tool), in voice mode
+  after voice input, or as the optional 08:30 brief. The spoken part is a ≤ 300-char gist (no lists,
+  no HTML); the full answer is always sent as text. `POST /v1/text-to-speech/{voice}` with
+  `output_format=opus_48000_64` — verified live to return OGG/Opus, so no conversion is needed.
+- **Limits**: `TTS_DAILY_CHAR_LIMIT` (default 3000 chars/day); a TTS failure never loses the text reply.
+- **Free plan**: Voice Library voices return HTTP 402 via the API; the service falls back once to a
+  premade voice and tells the student.

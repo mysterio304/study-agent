@@ -24,7 +24,8 @@ from agent.planner.blocks import auto_move_missed, has_plan, mark_missed_blocks
 from agent.planner.render import fmt_day
 from agent.planner.service import load_inputs
 from agent.prep import checkin
-from agent.telegram.cards import block_ping, day_view, morning_digest
+from agent.prep.settings_service import effective
+from agent.telegram.cards import block_ping, day_view, morning_brief_text, morning_digest
 from agent.telegram.format import h
 from agent.telegram.keyboards import block_end_kb, block_start_kb, checkin_kb
 
@@ -199,8 +200,25 @@ async def morning(svc: Services) -> None:
         )
     if await svc.notifier.send(text) is not None and digest_rows:  # mark only after delivery
         await mark_digest_sent(svc.sessionmaker, [r.id for r in digest_rows], svc.clock)
+    await _morning_voice(svc)
     if pending:
         await send_proposal(svc, pending)
+
+
+async def _morning_voice(svc: Services) -> None:
+    if svc.voice is None:
+        return
+    async with svc.sessionmaker() as s:
+        if not (await effective(s, svc.settings))["morning_voice"]:
+            return
+        brief = await morning_brief_text(s, svc.settings, svc.clock)
+    try:
+        audio, _ = await svc.voice.speak(brief)
+    except Exception:  # the text digest was already sent
+        log.exception("Morning voice brief failed")
+        return
+    if audio:
+        await svc.notifier.send_voice(audio, caption="🎙 Утренний бриф")
 
 
 async def evening(svc: Services) -> None:
