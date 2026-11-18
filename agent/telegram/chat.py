@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import timedelta
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction
@@ -11,13 +12,14 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 
 from agent.brain.llm import BudgetExceeded
+from agent.db.models import Assignment, Reminder
 from agent.flows import Services, apply_choice, send_proposal
 from agent.planner.blocks import BlockError, auto_move_missed, set_block_status
 from agent.planner.render import fmt_day
 from agent.planner.service import load_inputs
 from agent.prep import checkin
 from agent.telegram.format import h
-from agent.telegram.keyboards import BlockCb, CheckinCb, PropCb
+from agent.telegram.keyboards import BlockCb, CheckinCb, DeadlineCb, PropCb
 
 log = logging.getLogger(__name__)
 router = Router(name="chat")
@@ -38,13 +40,22 @@ def safe_html(text: str) -> str:
     return escaped if not stack else h(re.sub(r"</?(b|i)>", "", text))
 
 
+async def _ack(query: CallbackQuery, reply: str) -> None:
+    """Answer a button press. The DB change is already committed, so Telegram errors from stale
+    or double-tapped buttons (e.g. "message is not modified") are logged, never raised."""
+    try:
+        await query.answer(reply[:190])
+        if isinstance(query.message, Message):
+            await query.message.edit_reply_markup(reply_markup=None)
+            await query.message.answer(h(reply))
+    except TelegramBadRequest as exc:
+        log.info("Ignoring Telegram error on button ack: %s", exc.message)
+
+
 @router.callback_query(PropCb.filter())
 async def on_proposal(query: CallbackQuery, callback_data: PropCb, svc: Services) -> None:
     status = await apply_choice(svc, callback_data.id, callback_data.opt)
-    await query.answer(status[:190])
-    if isinstance(query.message, Message):
-        await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.answer(h(status))
+    await _ack(query, status)
 
 
 @router.callback_query(BlockCb.filter())
@@ -73,10 +84,36 @@ async def on_block(query: CallbackQuery, callback_data: BlockCb, svc: Services) 
             await s.commit()
         except BlockError as exc:
             reply = str(exc)
-    await query.answer(reply[:190])
-    if isinstance(query.message, Message):
-        await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.answer(reply)
+    await _ack(query, reply)
+
+
+SNOOZE = timedelta(hours=2)
+
+
+@router.callback_query(DeadlineCb.filter())
+async def on_deadline(query: CallbackQuery, callback_data: DeadlineCb, svc: Services) -> None:
+    async with svc.sessionmaker() as s:
+        a = await s.get(Assignment, callback_data.id)
+        if a is None:
+            await query.answer("Задание не найдено")
+            return
+        if callback_data.action == "done":
+            a.user_state, reply = "done", "Отметил как сделанное — больше не напомню."
+        elif callback_data.action == "ignore":
+            a.user_state, reply = "ignored", "Ок, по этому заданию напоминаний больше не будет."
+        else:
+            s.add(
+                Reminder(
+                    text=f"Дедлайн: {a.name}",
+                    remind_at=svc.clock.now() + SNOOZE,
+                    status="pending",
+                    source="deadline_snooze",
+                    created_at=svc.clock.now(),
+                )
+            )
+            reply = "Напомню через 2 часа."
+        await s.commit()
+    await _ack(query, reply)
 
 
 @router.callback_query(CheckinCb.filter())

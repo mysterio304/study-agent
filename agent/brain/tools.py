@@ -174,11 +174,28 @@ _TOOLS = [
         h.escalate,
     ),
     Tool("get_usage", "Today's LLM spend vs budget.", _obj({}), h.get_usage),
+    Tool(
+        "set_exam_info",
+        "Record what the student says about an exam: final_weight (fraction or percent) and/or target_grade.",
+        _obj({"exam": S, "final_weight": {"type": "number"}, "target_grade": S}, ["exam"]),
+        h.set_exam_info,
+    ),
+    Tool(
+        "add_busy_time",
+        "Block time the planner must not use (lectures, appointments): either date (one-off) or "
+        "weekday 0=Mon..6=Sun (weekly, optional until date), start/end HH:MM HKT. Creates a replan proposal.",
+        _obj(
+            {"date": DATE, "weekday": I, "start": S, "end": S, "label": S, "until": DATE},
+            ["start", "end"],
+        ),
+        h.add_busy_time,
+    ),
 ]
 TOOLS: dict[str, Tool] = {t.name: t for t in _TOOLS}
 
 PROFILES: dict[Profile, tuple[str, ...]] = {
     "chat": (
+        "add_busy_time",
         "add_personal_reminder",
         "escalate",
         "get_plan",
@@ -191,9 +208,11 @@ PROFILES: dict[Profile, tuple[str, ...]] = {
         "propose_plan_change",
         "propose_settings_change",
         "save_agreement",
+        "set_exam_info",
         "set_topic_level",
     ),
     "plan": (
+        "add_busy_time",
         "calc_needed_final",
         "escalate",
         "explain_priority",
@@ -206,7 +225,13 @@ PROFILES: dict[Profile, tuple[str, ...]] = {
         "save_agreement",
     ),
     "material": ("escalate", "get_progress", "log_study_session", "set_topic_level"),
-    "grades": ("calc_needed_final", "escalate", "get_course_scores", "get_deadlines"),
+    "grades": (
+        "calc_needed_final",
+        "escalate",
+        "get_course_scores",
+        "get_deadlines",
+        "set_exam_info",
+    ),
 }
 
 

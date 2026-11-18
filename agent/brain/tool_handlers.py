@@ -4,6 +4,7 @@ needs (never raw DB/Canvas objects), truncated to TOOL_RESULT_BUDGET by the disp
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -19,15 +20,17 @@ from agent.db.models import (
     Agreement,
     Assignment,
     Block,
+    BusySlot,
     Course,
     Exam,
     Proposal,
     Reminder,
     Topic,
 )
+from agent.grades.service import need_for_exam, render_need
 from agent.planner.blocks import debt, record_study
 from agent.planner.model import DEFAULT_CUTOFFS, PlannedBlock
-from agent.planner.priority import needed_final_pct, priority
+from agent.planner.priority import priority
 from agent.planner.render import KIND_RU, fmt_day, short_exam
 from agent.planner.service import (
     PlanError,
@@ -373,31 +376,84 @@ async def get_course_scores(ctx: ToolContext, args: dict[str, Any]) -> str:
 
 
 async def calc_needed_final(ctx: ToolContext, args: dict[str, Any]) -> str:
+    letters = [args["target"]] if args.get("target") else ["A+", "A", "A-", "B+"]
+    if any(letter not in DEFAULT_CUTOFFS for letter in letters):
+        raise ToolError(f"Неизвестная оценка; есть: {', '.join(DEFAULT_CUTOFFS)}")
     async with ctx.sessionmaker() as s:
         exam = await find_exam(s, args["course"])
-        course = await s.get(Course, exam.course_id) if exam.course_id else None
-    if exam.final_weight is None:
-        return f"Вес final для {short_exam(exam.title)} неизвестен — спроси студента или проверь syllabus."
-    if course is None or course.current_score is None:
-        return "Нет текущего балла из Canvas."
-    targets = [args["target"]] if args.get("target") else ["A+", "A", "A-", "B+"]
-    lines = []
-    for letter in targets:
-        cut = DEFAULT_CUTOFFS.get(letter)
-        if cut is None:
-            raise ToolError(f"Неизвестная оценка {letter}")
-        need = needed_final_pct(course.current_score, exam.final_weight, cut)
-        verdict = (
-            "недостижимо"
-            if need is not None and need > 100
-            else ("уже гарантировано" if need is not None and need <= 0 else f"{need:.1f}%")
-        )
-        lines.append(f"{letter} (≥{cut}%): нужно на final {verdict}")
+        result = await need_for_exam(s, exam)
+    return re.sub(r"</?(b|i)>", "", render_need(exam, result, letters))
+
+
+async def set_exam_info(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """The student states a final weight or a target grade ("вес final по алгебре 60%")."""
+    async with ctx.sessionmaker() as s:
+        exam = await find_exam(s, args["exam"])
+        parts = []
+        if args.get("final_weight") is not None:
+            w = float(args["final_weight"])
+            w = w / 100 if w > 1 else w
+            if not 0 < w <= 1:
+                raise ToolError("Вес final: от 1 до 100%")
+            exam.final_weight, exam.weight_source = w, "user"
+            parts.append(f"вес final {w:.0%}")
+        if args.get("target_grade"):
+            if args["target_grade"] not in DEFAULT_CUTOFFS:
+                raise ToolError(f"Цель: одна из {', '.join(DEFAULT_CUTOFFS)}")
+            exam.target_grade = args["target_grade"]
+            parts.append(f"цель {exam.target_grade}")
+        if not parts:
+            raise ToolError("Укажи final_weight и/или target_grade")
+        await s.commit()
     return (
-        f"{short_exam(exam.title)}: сейчас {course.current_score:.1f}%, final {exam.final_weight:.0%}.\n"
-        + "\n".join(lines)
-        + "\nОценка приблизительная: drop rules, кривые и округление не учтены."
+        f"{short_exam(exam.title)}: " + ", ".join(parts) + ". Приоритеты учтут это при пересчёте."
     )
+
+
+async def add_busy_time(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """Block time the planner must not use (lectures, appointments), then propose a replan."""
+    try:
+        start, end = parse_hhmm(args["start"]), parse_hhmm(args["end"])
+    except ValueError as exc:
+        raise ToolError("Время в формате HH:MM") from exc
+    if end <= start:
+        raise ToolError("Конец должен быть позже начала")
+    on_date = _parse_local_date(args["date"]) if args.get("date") else None
+    weekday = int(args["weekday"]) if args.get("weekday") is not None else None
+    if (on_date is None) == (weekday is None):
+        raise ToolError("Укажи либо date (разово), либо weekday 0–6 (каждую неделю)")
+    if weekday is not None and not 0 <= weekday <= 6:
+        raise ToolError("weekday: 0=пн … 6=вс")
+    until = _parse_local_date(args["until"]) if args.get("until") else None
+    async with ctx.sessionmaker() as s:
+        s.add(
+            BusySlot(
+                weekday=weekday,
+                on_date=on_date,
+                start_local=args["start"],
+                end_local=args["end"],
+                label=str(args.get("label") or "занято")[:120],
+                valid_from=ctx.clock.today(),
+                valid_until=until,
+            )
+        )
+        await s.commit()
+        inputs = await load_inputs(s, ctx.settings, ctx.clock)
+        try:
+            p = await propose_plan(
+                s,
+                inputs,
+                ctx.clock,
+                reason=f"Учёт занятого времени: {args.get('label') or ''}",
+                proposed_by="agent",
+            )
+        except PlanError as exc:
+            raise ToolError(f"Время добавлено, но план не пересчитался: {exc}") from exc
+        await s.commit()
+    if p is None:
+        return "Время добавлено; план от этого не меняется."
+    ctx.proposals.append(p.id)
+    return f"Время добавлено. Proposal #{p.id} учитывает его; студент подтвердит кнопкой."
 
 
 async def get_deadlines(ctx: ToolContext, args: dict[str, Any]) -> str:

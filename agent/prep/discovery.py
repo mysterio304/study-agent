@@ -8,10 +8,8 @@ fallback if the batch is slow. Input is compact text (never raw Canvas JSON) wit
 
 from __future__ import annotations
 
-import html
 import json
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -23,8 +21,9 @@ from agent.brain.batches import BatchItem, BatchRunner, Purpose
 from agent.brain.budgets import truncate_to_tokens
 from agent.brain.llm import LlmClient, text_of
 from agent.canvas.api import CanvasSource
-from agent.canvas.sync import content_hash
+from agent.canvas.structure import sync_course_structure
 from agent.core.clock import Clock
+from agent.core.text import strip_html
 from agent.db.models import Course, CourseFile, CourseModule, Exam, LlmBatch, Topic
 
 log = logging.getLogger(__name__)
@@ -66,84 +65,6 @@ TOPIC_SCHEMA: dict[str, Any] = {
 }
 
 OnReady = Callable[[int], Awaitable[None]]
-
-
-def strip_html(value: str | None) -> str:
-    text = re.sub(r"<(br|p|li|h\d)[^>]*>", "\n", value or "", flags=re.I)
-    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
-    return re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n+", "\n", text)).strip()
-
-
-async def sync_course_structure(
-    sessionmaker: async_sessionmaker, source: CanvasSource, course_id: int
-) -> None:
-    """Fetch module headers/items and file metadata (no downloads; that is M5) and store them.
-    Network calls happen before any DB session opens, so no write lock is held across them."""
-    modules = await source.list_modules(course_id) or []
-    files = await source.list_files(course_id)
-    async with sessionmaker() as session:
-        await _store_course_structure(session, course_id, modules, files)
-        await session.commit()
-
-
-async def _store_course_structure(
-    session: AsyncSession,
-    course_id: int,
-    modules: list[dict[str, Any]],
-    files: list[dict[str, Any]] | None,
-) -> None:
-    for m in modules:
-        items = [
-            {"title": i.get("title"), "type": i.get("type"), "content_id": i.get("content_id")}
-            for i in m.get("items") or []
-        ]
-        row = await session.get(CourseModule, m["id"]) or CourseModule(id=m["id"])
-        row.course_id, row.name, row.position = course_id, m.get("name", ""), m.get("position")
-        row.items_json, row.content_hash = items, content_hash(items)
-        session.add(row)
-    seen: set[int] = set()
-    for f in files or []:
-        seen.add(f["id"])
-        await _upsert_file(
-            session,
-            course_id,
-            f["id"],
-            f.get("display_name", ""),
-            f.get("content-type"),
-            "files_api",
-        )
-    for m in modules:  # Files tab hidden → files are often still reachable via module items
-        for i in m.get("items") or []:
-            if i.get("type") == "File" and i.get("content_id") and i["content_id"] not in seen:
-                seen.add(i["content_id"])
-                await _upsert_file(
-                    session,
-                    course_id,
-                    i["content_id"],
-                    i.get("title", ""),
-                    None,
-                    "module_item",
-                    module=m.get("name"),
-                )
-    await session.flush()
-
-
-async def _upsert_file(
-    session: AsyncSession,
-    course_id: int,
-    canvas_id: int,
-    name: str,
-    ctype: str | None,
-    source: str,
-    module: str | None = None,
-) -> None:
-    row = await session.scalar(select(CourseFile).where(CourseFile.canvas_file_id == canvas_id))
-    row = row or CourseFile(
-        canvas_file_id=canvas_id, course_id=course_id, source=source, index_state="pending"
-    )
-    row.display_name, row.content_type, row.module_name = name[:500], ctype, module
-    row.kind = "past_paper" if re.search(r"past|exam|final|midterm", name, re.I) else "lecture"
-    session.add(row)
 
 
 async def discovery_prompt(session: AsyncSession, exam: Exam) -> str:

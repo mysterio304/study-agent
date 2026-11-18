@@ -190,3 +190,10 @@ def test_replan_after_following_the_plan_barely_changes_it(cfg, exams, topics) -
     free = build_plan(exams, done, cfg, busy=[], now=tomorrow, history=history)
     assert changed_blocks(remaining, anchored.blocks) <= 0.15 * len(anchored.blocks)
     assert changed_blocks(remaining, anchored.blocks) <= changed_blocks(remaining, free.blocks)
+
+
+def test_exam_without_topics_does_not_block_planning(cfg, exams, topics) -> None:
+    only_networks = [t for t in topics if t.exam_id == NETWORKS]
+    plan = build_plan(exams, only_networks, cfg, busy=[], now=NOW)
+    assert plan.blocks and {b.exam_id for b in plan.blocks} == {NETWORKS}
+    assert validate_plan(plan.blocks, exams, only_networks, cfg, busy=[]) == []

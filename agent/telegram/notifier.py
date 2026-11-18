@@ -63,4 +63,4 @@ class ConsoleNotifier:
         if kb is not None:
             buttons = "\n  " + "  ".join(f"[{b.text}]" for row in kb.inline_keyboard for b in row)
         sys.stdout.write(f"\n── bot ──\n{plain}{buttons}\n")
-        return None
+        return 0  # "delivered" (callers treat None as a failed send)

@@ -9,7 +9,10 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
+from agent.brain.tool_handlers import ToolError, find_exam
 from agent.flows import Services, propose_replan, send_proposal
+from agent.grades.service import deadlines_view, grades_view, need_for_exam, render_need
+from agent.planner.model import DEFAULT_CUTOFFS
 from agent.planner.service import load_inputs, propose_undo
 from agent.prep import checkin
 from agent.prep.settings_service import SPECS, SettingsError, effective, set_value
@@ -38,6 +41,39 @@ async def cmd_plan(message: Message, svc: Services) -> None:
 async def cmd_progress(message: Message, svc: Services) -> None:
     async with svc.sessionmaker() as s:
         await message.answer(await progress_view(s))
+
+
+@router.message(Command("deadlines"))
+async def cmd_deadlines(message: Message, svc: Services) -> None:
+    async with svc.sessionmaker() as s:
+        await message.answer(await deadlines_view(s, svc.clock))
+
+
+@router.message(Command("grades"))
+async def cmd_grades(message: Message, svc: Services) -> None:
+    async with svc.sessionmaker() as s:
+        await message.answer(await grades_view(s, svc.clock))
+
+
+@router.message(Command("need"))
+async def cmd_need(message: Message, command: CommandObject, svc: Services) -> None:
+    """/need <course> [grade] — e.g. `/need networks A-`."""
+    parts = (command.args or "").split()
+    if not parts:
+        await message.answer(
+            "Формат: /need &lt;курс&gt; [оценка], например <code>/need networks A-</code>"
+        )
+        return
+    letter = parts[-1].upper() if len(parts) > 1 and parts[-1].upper() in DEFAULT_CUTOFFS else None
+    course = " ".join(parts[:-1] if letter else parts)
+    async with svc.sessionmaker() as s:
+        try:
+            exam = await find_exam(s, course)
+        except ToolError as exc:
+            await message.answer(h(str(exc)))
+            return
+        result = await need_for_exam(s, exam)
+    await message.answer(render_need(exam, result, [letter] if letter else ["A+", "A", "A-", "B+"]))
 
 
 @router.message(Command("usage"))

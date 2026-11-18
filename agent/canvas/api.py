@@ -56,6 +56,8 @@ class CanvasSource(Protocol):
     async def list_files(self, course_id: int) -> list[dict[str, Any]] | None: ...
     async def list_modules(self, course_id: int) -> list[dict[str, Any]] | None: ...
     async def list_conversations(self) -> list[dict[str, Any]] | None: ...
+    async def list_my_submissions(self, course_id: int) -> list[dict[str, Any]] | None: ...
+    async def get_self_id(self) -> int: ...
 
 
 class CanvasAPI:
@@ -119,6 +121,17 @@ class CanvasAPI:
         )
 
     async def list_conversations(self) -> list[dict[str, Any]] | None:
+        # Default scope = all non-archived conversations (valid scopes: unread/starred/archived/sent).
+        return await self._c.optional(self._c.get_paginated("/api/v1/conversations"))
+
+    async def get_self_id(self) -> int:
+        return int((await self._c.get_json("/api/v1/users/self"))["id"])
+
+    async def list_my_submissions(self, course_id: int) -> list[dict[str, Any]] | None:
+        """The caller's submissions for every assignment in a course, with grader comments."""
         return await self._c.optional(
-            self._c.get_paginated("/api/v1/conversations", {"scope": "inbox"})
+            self._c.get_paginated(
+                f"/api/v1/courses/{course_id}/students/submissions",
+                {"include[]": ["submission_comments"]},
+            )
         )

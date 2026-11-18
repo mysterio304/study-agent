@@ -14,13 +14,14 @@ from agent.brain.llm import LlmClient
 from agent.canvas.api import CanvasSource
 from agent.config import Settings
 from agent.core.clock import Clock
+from agent.core.timeutil import TimeRange, parse_time_range
 from agent.db.models import Exam, Proposal, Topic
 from agent.planner.blocks import has_plan
 from agent.planner.render import short_exam
 from agent.planner.service import PlanError, apply_proposal, load_inputs, propose_plan
 from agent.prep import topics_service as ts
 from agent.prep.discovery import TopicDiscovery
-from agent.prep.settings_service import SettingsError, set_value
+from agent.prep.settings_service import SettingsError, effective, set_value
 from agent.telegram.cards import proposal_card
 from agent.telegram.format import h
 from agent.telegram.keyboards import rating_kb, topic_review_kb
@@ -40,6 +41,12 @@ class Services:
     agent: Agent | None = None
     batches: BatchRunner | None = None
     discovery: TopicDiscovery | None = None
+
+
+async def quiet_range(svc: Services) -> TimeRange:
+    """Current quiet hours (may be changed at runtime via settings)."""
+    async with svc.sessionmaker() as s:
+        return parse_time_range((await effective(s, svc.settings))["quiet_hours"])
 
 
 async def send_proposal(svc: Services, proposal_id: int) -> None:

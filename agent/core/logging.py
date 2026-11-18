@@ -52,6 +52,6 @@ def setup_logging(level: str = "INFO", secrets: Iterable[str] = ()) -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
-    # httpx logs full request URLs at INFO; keep it at WARNING to avoid noisy/sensitive lines.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+    # Per-request / per-job INFO lines drown out real warnings; keep these libraries at WARNING.
+    for noisy in ("httpx", "httpx2", "apscheduler", "aiogram.event"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)

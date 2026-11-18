@@ -101,6 +101,8 @@ class Assignment(Base):
     grader_comment_count: Mapped[int] = mapped_column(Integer, default=0)
     is_missing: Mapped[bool] = mapped_column(Boolean, default=False)
     omit_from_final_grade: Mapped[bool] = mapped_column(Boolean, default=False)
+    submission_types: Mapped[list[Any] | None]
+    excused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     stats_json: Mapped[dict[str, Any] | None]
     user_state: Mapped[str | None] = mapped_column(String(16))  # done / ignored (bot buttons)
     content_hash: Mapped[str] = mapped_column(String(64))

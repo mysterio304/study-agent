@@ -1,0 +1,10 @@
+[
+  {"id": 3101, "name": "Lab 5: TCP congestion control", "due_at": "2026-11-21T15:59:00Z", "points_possible": 10,
+   "html_url": "https://canvas.example.edu/courses/101/assignments/3101", "submission_types": ["online_upload"],
+   "published": true, "assignment_group_id": 11, "score_statistics": null},
+  {"id": 3102, "name": "Assignment 3: Routing", "due_at": "2026-11-12T15:59:00Z", "points_possible": 20,
+   "html_url": "https://canvas.example.edu/courses/101/assignments/3102", "submission_types": ["online_upload"],
+   "published": true, "assignment_group_id": 11, "score_statistics": {"min": 6, "max": 20, "mean": 15.2}},
+  {"id": 3103, "name": "Final Examination", "due_at": null, "points_possible": 100,
+   "submission_types": ["on_paper"], "published": true, "assignment_group_id": 12}
+]

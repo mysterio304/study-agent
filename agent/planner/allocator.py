@@ -184,9 +184,13 @@ def _consecutive_pair(slots: list[Slot], cfg: PlanConfig) -> int | None:
 
 
 def _place_mock(
-    slots: list[Slot], eligible: list[ExamInfo], day: date, cfg: PlanConfig
+    slots: list[Slot], eligible: list[ExamInfo], day: date, cfg: PlanConfig, with_topics: set[int]
 ) -> list[PlannedBlock]:
-    candidates = [e for e in eligible if days_until(e, day, cfg) in cfg.mock_days_before]
+    candidates = [
+        e
+        for e in eligible
+        if days_until(e, day, cfg) in cfg.mock_days_before and e.id in with_topics
+    ]
     if not candidates:
         return []
     exam = min(candidates, key=lambda e: e.starts_at)
@@ -215,7 +219,7 @@ def _plan_day(
     blocks = (
         []
         if focus or any(exam_local_date(e, cfg) == day for e in exams)
-        else _place_mock(free, eligible, day, cfg)
+        else _place_mock(free, eligible, day, cfg, {st.topic.exam_id for st in states.values()})
     )
 
     queue: list[list[ExamInfo]] = []

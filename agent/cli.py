@@ -20,11 +20,13 @@ from datetime import datetime, time, timedelta
 from sqlalchemy import select
 
 from agent.app import App, build_app
+from agent.canvas.sync import sync_courses
 from agent.config import get_settings
 from agent.core.clock import FixedClock
 from agent.core.timeutil import local_to_utc
-from agent.db.models import Base, Proposal
+from agent.db.models import Base, Exam, Proposal, SyncState
 from agent.flows import Services, apply_choice, continue_setup, on_topics_ready
+from agent.grades.service import deadlines_view, grades_view, need_for_exam, render_need
 from agent.notify import jobs
 from agent.planner.render import fmt_day, group_by_day, short_exam
 from agent.planner.service import future_blocks, load_inputs, propose_undo
@@ -159,7 +161,39 @@ async def demo_plan(app: App) -> None:
     _out(f"  undo proposal: {'#' + str(p.id) if p else 'none'}")
 
 
-COMMANDS = {"sync": demo_sync, "map": demo_mapping, "plan": demo_plan}
+async def demo_notify(app: App) -> None:
+    """M3 walkthrough on fixtures: an established bot sees Canvas changes → templated messages."""
+    clock = app.clock
+    assert isinstance(clock, FixedClock)
+    svc = app.build_services(ConsoleNotifier())
+    svc.llm = svc.agent = svc.batches = None  # offline; live mode summarises long announcements
+    async with app.sessionmaker() as s:  # pretend earlier syncs already seeded these scopes
+        for scope in ("assignments:101", "files:101", "announcements", "conversations", "missing"):
+            s.add(SyncState(scope=scope, initialized=True))
+        await s.commit()
+    async with app.sessionmaker() as s:
+        await sync_courses(s, app.canvas, clock)  # courses first, so the mapping can be confirmed
+        for exam, sug in await suggestions_for_unconfirmed(s):
+            await confirm_mapping(s, exam.id, sug.course_id)
+        await s.commit()
+
+    _section("1. Canvas sync → events → outbox → Telegram (13:00, outside quiet hours)")
+    await app.sync_canvas()
+    await jobs.tick(svc)
+
+    _section("2. Next morning 08:30 — digest collects low-priority items (new files, new work)")
+    _set_local(clock, 1, time(8, 30))
+    await jobs.morning(svc)
+
+    _section("3. /deadlines, /grades, /need networks (templates, no LLM)")
+    async with app.sessionmaker() as s:
+        _out(await deadlines_view(s, clock))
+        _out("\n" + await grades_view(s, clock))
+        exam = await s.scalar(select(Exam).where(Exam.title == "Computer Networks"))
+        _out("\n" + render_need(exam, await need_for_exam(s, exam), ["A", "A-"]))
+
+
+COMMANDS = {"sync": demo_sync, "map": demo_mapping, "plan": demo_plan, "notify": demo_notify}
 
 
 async def _reset_dry_run_db(app: App) -> None:
@@ -178,16 +212,20 @@ async def _amain(command: str, dry_run: bool) -> None:
     if not dry_run:
         settings.require_live()
     clock = None
-    if command == "plan":
+    if command in ("plan", "notify"):
         if not dry_run:
-            raise SystemExit("The plan walkthrough only runs with --dry-run.")
-        start = datetime.combine(
-            datetime.now(settings.zone).date() + timedelta(days=1), time(7, 0), settings.zone
+            raise SystemExit(f"The {command} walkthrough only runs with --dry-run.")
+        start = (
+            datetime.combine(
+                datetime.now(settings.zone).date() + timedelta(days=1), time(7, 0), settings.zone
+            )
+            if command == "plan"
+            else datetime(2026, 11, 19, 13, 0, tzinfo=settings.zone)  # fixtures are dated around it
         )
         clock = FixedClock(start, settings.zone)
         settings = settings.model_copy(update={"anthropic_api_key": None, "log_level": "WARNING"})
     async with build_app(settings, dry_run=dry_run, clock=clock) as app:
-        if command == "plan":
+        if command in ("plan", "notify"):
             await _reset_dry_run_db(app)
         elif command == "map":
             await app.sync_canvas()

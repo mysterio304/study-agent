@@ -52,5 +52,11 @@ class FakeCanvasSource:
     async def list_modules(self, course_id: int) -> list[dict[str, Any]] | None:
         return self._load(f"modules_{course_id}")
 
+    async def get_self_id(self) -> int:
+        return 7
+
+    async def list_my_submissions(self, course_id: int) -> list[dict[str, Any]] | None:
+        return self._load(f"submissions_{course_id}", [])
+
     async def list_conversations(self) -> list[dict[str, Any]] | None:
         return self._load("conversations", [])

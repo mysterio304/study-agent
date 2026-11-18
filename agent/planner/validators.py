@@ -65,10 +65,11 @@ def validate_plan(
             out.append(Violation("topic_overuse", f"{day}: a topic exceeds the per-day limit"))
 
     first_day = _local_day(ordered[0], cfg)
+    exams_with_topics = {t.exam_id for t in topics}
     for exam in exams:
         eve = exam_local_date(exam, cfg) - timedelta(days=1)
-        if eve < first_day or not cfg.eve_review_only:
-            continue
+        if eve < first_day or not cfg.eve_review_only or exam.id not in exams_with_topics:
+            continue  # nothing to review for an exam without topics
         eve_blocks = days.get(eve, [])
         if not any(b.exam_id == exam.id and b.kind == "review" for b in eve_blocks):
             out.append(Violation("missing_eve_review", f"no review the day before {exam.title}"))

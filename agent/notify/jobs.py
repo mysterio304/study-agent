@@ -15,7 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent.db.models import Block, Exam, Proposal, Reminder, Topic
-from agent.flows import Services, propose_replan, send_proposal
+from agent.flows import Services, propose_replan, quiet_range, send_proposal
+from agent.notify.ladder import run_ladder
+from agent.notify.outbox import flush, mark_digest_sent, pending_digest
+from agent.notify.recheck import refresh_message
+from agent.notify.report import weekly_report
 from agent.planner.blocks import auto_move_missed, has_plan, mark_missed_blocks
 from agent.planner.render import fmt_day
 from agent.planner.service import load_inputs
@@ -32,7 +36,16 @@ AUTO_MOVES_PER_DAY = 1
 
 
 async def tick(svc: Services) -> None:
-    for step in (_missed, _block_pings, _block_ends, _reminders, _expire_proposals):
+    steps = (
+        _missed,
+        _block_pings,
+        _block_ends,
+        _reminders,
+        _expire_proposals,
+        _ladder,
+        _flush_outbox,
+    )
+    for step in steps:
         try:
             await step(svc)
         except Exception:  # one failing step must not block the others
@@ -134,6 +147,17 @@ async def _reminders(svc: Services) -> None:
         await svc.notifier.send(f"🔔 {h(text)}")
 
 
+async def _ladder(svc: Services) -> None:
+    quiet = await quiet_range(svc)
+    async with svc.sessionmaker() as s:
+        await run_ladder(s, svc.clock, quiet)
+        await s.commit()
+
+
+async def _flush_outbox(svc: Services) -> None:
+    await flush(svc.sessionmaker, svc.notifier, svc.clock, refresh=refresh_message)
+
+
 async def _expire_proposals(svc: Services) -> None:
     async with svc.sessionmaker() as s:
         for p in (
@@ -149,10 +173,11 @@ async def _expire_proposals(svc: Services) -> None:
 
 async def morning(svc: Services) -> None:
     async with svc.sessionmaker() as s:
+        digest_rows = await pending_digest(s)
+        digest = [r.text for r in digest_rows]
         missed_checkin = await checkin.awaiting(s, svc.clock)
-        if not await has_plan(s):
-            return
-        text = await morning_digest(s, svc.settings, svc.clock)
+        planned = await has_plan(s)
+        text = await morning_digest(s, svc.settings, svc.clock) if planned else ""
         pending = await s.scalar(  # only cards not yet shown (e.g. the nightly replan)
             select(Proposal.id)
             .where(
@@ -162,11 +187,18 @@ async def morning(svc: Services) -> None:
             )
             .order_by(Proposal.id.desc())
         )
+    if digest:  # new files, new assignments… collected since yesterday's digest
+        text = (text + "\n\n" if text else "") + "<b>Новое в Canvas</b>\n" + "\n".join(digest)
+    if not planned:
+        if text and await svc.notifier.send(text) is not None and digest_rows:
+            await mark_digest_sent(svc.sessionmaker, [r.id for r in digest_rows], svc.clock)
+        return
     if missed_checkin is not None and missed_checkin < svc.clock.today():
         await svc.notifier.send(
             "Вчера не было check-in. Коротко: что успел сделать? (можно голосом)", checkin_kb()
         )
-    await svc.notifier.send(text)
+    if await svc.notifier.send(text) is not None and digest_rows:  # mark only after delivery
+        await mark_digest_sent(svc.sessionmaker, [r.id for r in digest_rows], svc.clock)
     if pending:
         await send_proposal(svc, pending)
 
@@ -181,6 +213,14 @@ async def evening(svc: Services) -> None:
     await svc.notifier.send(
         f"🌙 Check-in: что сделал сегодня? Можно текстом или голосом.\n\n{today}", checkin_kb()
     )
+
+
+async def weekly(svc: Services) -> None:
+    async with svc.sessionmaker() as s:
+        if not await has_plan(s):
+            return
+        text = await weekly_report(s, svc.settings, svc.clock)
+    await svc.notifier.send(text)
 
 
 async def nightly(svc: Services) -> None:

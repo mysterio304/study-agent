@@ -23,6 +23,7 @@ from agent.telegram.notifier import TelegramNotifier
 
 log = logging.getLogger("agent")
 NIGHTLY_REPLAN = (3, 30)
+WEEKLY_REPORT = ("sun", 20)
 
 
 def _guard(name: str, job: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[None]]:
@@ -63,6 +64,15 @@ def _schedule_jobs(app: App, svc: Services) -> AsyncIOScheduler:
         hour=s.evening_time.hour,
         minute=s.evening_time.minute,
         id="evening",
+        **common,
+    )
+    scheduler.add_job(
+        _guard("weekly", lambda: jobs.weekly(svc)),
+        "cron",
+        day_of_week=WEEKLY_REPORT[0],
+        hour=WEEKLY_REPORT[1],
+        minute=0,
+        id="weekly",
         **common,
     )
     scheduler.add_job(

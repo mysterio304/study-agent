@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
@@ -17,14 +17,14 @@ from agent.brain.llm import LlmClient
 from agent.canvas.api import CanvasAPI, CanvasSource
 from agent.canvas.client import CanvasClient
 from agent.canvas.fake import FakeCanvasSource
-from agent.canvas.sync import sync_courses
+from agent.canvas.sync_runner import CanvasSync
 from agent.config import Settings
 from agent.core.clock import Clock, SystemClock
 from agent.core.logging import setup_logging
 from agent.db.migrate import upgrade_to_head
-from agent.db.models import SyncState
 from agent.db.session import make_engine, make_sessionmaker
-from agent.flows import Services, on_topics_ready
+from agent.flows import Services, on_topics_ready, quiet_range
+from agent.notify.dispatch import summarise
 from agent.prep.discovery import TopicDiscovery
 from agent.prep.seed import seed_exams
 from agent.telegram.notifier import ConsoleNotifier, Notifier
@@ -41,21 +41,27 @@ class App:
     canvas: CanvasSource
     dry_run: bool
     svc: Services | None = None
+    _sync: CanvasSync | None = field(default=None, repr=False)
 
     async def sync_canvas(self) -> None:
-        """Scheduled job. Failures are recorded, never raised into the scheduler."""
+        """Scheduled job: full Canvas sync → events → outbox. Never raises into the scheduler
+        (per-scope failures are recorded in `sync_state` by CanvasSync)."""
+        if self._sync is None:
+            svc = self.svc
+            self._sync = CanvasSync(
+                self.sessionmaker,
+                self.canvas,
+                self.clock,
+                quiet=(lambda: quiet_range(svc)) if svc else None,
+                summarise=(lambda text: summarise(svc.llm, text)) if svc else None,
+            )
         try:
-            async with self.sessionmaker() as session:
-                await sync_courses(session, self.canvas, self.clock)
-                await session.commit()
-        except Exception as exc:
+            report = await self._sync.run()  # notifications are queued atomically with state
+        except Exception:
             log.exception("Canvas sync failed")
-            async with self.sessionmaker() as session:
-                state = await session.get(SyncState, "courses") or SyncState(scope="courses")
-                state.last_error = f"{type(exc).__name__}: {exc}"[:500]
-                state.consecutive_failures = (state.consecutive_failures or 0) + 1
-                session.add(state)
-                await session.commit()
+            return
+        if report.failed_scopes:
+            log.warning("Canvas scopes failed: %s", ", ".join(report.failed_scopes[:5]))
 
     def build_services(self, notifier: Notifier | None = None) -> Services:
         """Wire LLM, agent, batches and discovery. Without an API key the agent is disabled and

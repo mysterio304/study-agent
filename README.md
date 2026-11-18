@@ -4,9 +4,10 @@ A personal AI agent that lives in Telegram, reads my Canvas LMS (read-only), and
 enforces final-exam preparation**. Telegram is only the interface — the core is a Claude
 tool-use agent plus a deterministic planner, with persistent memory and proactive behaviour.
 
-> Status: **Milestone 2 — agent loop + finals planner MVP.** Joint plan for four exams,
-> proposals with confirmation + undo, block pings, evening check-in, nightly replanning, and a
-> cost-aware Claude agent (Haiku by default, Sonnet by rule, prompt caching, budgets).
+> Status: **Milestone 3 — notifications.** On top of the finals planner and cost-aware agent
+> (M2): Canvas sync with diffing, deadline ladder with buttons, grades with class stats and
+> teacher comments, announcements, new files, inbox, quiet-hours outbox, morning digest, weekly
+> report, and a grade calculator (`/need`).
 > See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the milestone plan.
 
 ## Highlights
@@ -23,6 +24,9 @@ tool-use agent plus a deterministic planner, with persistent memory and proactiv
 - **Token-efficient by design** — rule-based model routing, byte-stable cached prefixes per
   toolset profile, compact context, per-call-type token budgets asserted in tests, Batches for
   offline work, per-call cost accounting with a daily budget (`/usage`).
+- **No notification floods** — each Canvas scope's first sync seeds state silently; every
+  message has a stable dedupe key; non-urgent messages wait out quiet hours (the 3 h deadline
+  step doesn't); low-priority items (new files) go to the morning digest.
 - **`--dry-run`** — runs on synthetic fixtures without any external API.
 
 ## Quick start (local)
@@ -33,7 +37,8 @@ Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/).
 uv sync                                   # install deps
 uv run pytest                             # run tests
 uv run python -m agent.cli map --dry-run  # demo: seeded finals + suggested course mapping
-uv run python -m agent.cli plan --dry-run # demo: topics → first joint plan → pings → replan → undo
+uv run python -m agent.cli plan --dry-run   # demo: topics → first joint plan → pings → replan → undo
+uv run python -m agent.cli notify --dry-run # demo: Canvas changes → grade/announcement/deadline messages
 ```
 
 ### Run against real services
@@ -43,7 +48,8 @@ uv run python -m agent.cli plan --dry-run # demo: topics → first joint plan �
    - `TELEGRAM_OWNER_ID` — your numeric id (e.g. from @userinfobot);
    - `CANVAS_TOKEN` — Canvas → Account → Settings → *New Access Token*;
    - `ANTHROPIC_API_KEY`.
-2. `uv run python -m agent` — the bot starts long-polling; send `/start`: map exams to courses →
+2. `uv run python -m agent.preflight` — one read-only call per service to verify credentials.
+3. `uv run python -m agent` — the bot starts long-polling; send `/start`: map exams to courses →
    review discovered topics → rate your level per topic → confirm the first plan.
 
 ### Commands
@@ -51,6 +57,8 @@ uv run python -m agent.cli plan --dry-run # demo: topics → first joint plan �
 | Command | What it does (LLM?) |
 |---|---|
 | `/today`, `/plan`, `/progress` | Today / next 3 days / topic levels — templates, no LLM |
+| `/deadlines`, `/grades` | Upcoming Canvas deadlines; course scores and recent grades — templates |
+| `/need <course> [grade]` | Final-exam score needed per letter (two scenarios for ungraded work) |
 | `/usage` | LLM spend today and 7 days, by purpose and model, cache hit rate |
 | `/undo` | One-tap proposal to restore the previous plan version |
 | `/replan` | Recompute the plan from actual progress (proposal) |
@@ -84,13 +92,14 @@ agent/
   cli.py         demo/ops commands
   core/          clock, time helpers, secret-redacting logging
   db/            models, UTC type, Alembic migrations
-  canvas/        read-only client, endpoint layer, fixture fake, sync
+  canvas/        read-only client, endpoints, normalizer, differ, sync runner, fixture fake
   brain/         LLM client (guards, caching, accounting), router, tools, agent loop, batches
   planner/       priority, slots, joint allocator, validators, feasibility, proposals/undo
   prep/          exam seed, course mapping, topic discovery/review, check-in, settings
-  notify/        scheduled jobs: tick (pings, reminders), morning, evening, nightly replan
+  notify/        events, templates, quiet-hours outbox, deadline ladder, jobs, weekly report
+  grades/        grade calculator (weighted / points-based) and grade views
   telegram/      whitelist middleware, /start wizard, commands, chat, cards
-  files/ voice/ grades/   (upcoming milestones)
+  files/ voice/  (upcoming milestones)
 tests/           pytest + respx (HTTP mocked)
 fixtures/        synthetic data for --dry-run
 ```

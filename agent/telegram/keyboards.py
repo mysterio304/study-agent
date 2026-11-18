@@ -31,6 +31,13 @@ class RateCb(CallbackData, prefix="rate"):
     rest: bool = False
 
 
+class DeadlineCb(CallbackData, prefix="dl"):
+    """Packs as 'dl:<id>:<action>' — the format notify.templates.deadline_buttons builds."""
+
+    id: int
+    action: str  # done | snooze | ignore
+
+
 class CheckinCb(CallbackData, prefix="chk"):
     action: str  # later
 

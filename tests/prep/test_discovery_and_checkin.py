@@ -10,6 +10,7 @@ from sqlalchemy import select
 from agent.brain.batches import BatchRunner
 from agent.brain.llm import LlmClient
 from agent.canvas.fake import FakeCanvasSource
+from agent.canvas.structure import sync_course_structure
 from agent.canvas.sync import sync_courses
 from agent.config import Settings
 from agent.core.clock import FixedClock
@@ -25,7 +26,7 @@ from agent.db.models import (
 )
 from agent.prep import checkin as checkin_mod
 from agent.prep import topics_service as ts
-from agent.prep.discovery import TopicDiscovery, parse_topics, sync_course_structure
+from agent.prep.discovery import TopicDiscovery, parse_topics
 from agent.prep.mapping_service import confirm_mapping, suggestions_for_unconfirmed
 from agent.prep.seed import seed_exams
 from tests.brain.conftest import FakeBackend, text_msg

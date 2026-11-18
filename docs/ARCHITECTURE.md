@@ -1,6 +1,6 @@
 # Study Agent — Architecture & DB Schema (v2, 2026-11-18)
 
-Status: v1 and v2 approved; M1 and M2 implemented.
+Status: v1 and v2 approved; M1–M3 implemented.
 
 ## 1. Guiding decisions
 
@@ -262,3 +262,28 @@ Assumptions: prefix 3.5K tokens, per-turn tail 2.5K, Haiku chat turn = 2 calls, 
 | one-time setup | topic discovery + diagnostic | | **≈ $0.19** |
 
 Sonnet escalations are ~80 % of a typical day's cost. For comparison, the v1 design (Sonnet for all chat) is ≈ $1.08 on a typical day. Nov 19 → Dec 14 at the typical rate ≈ **$7 total**. Main uncertainty: thinking tokens (billed as output) — if they double output tokens, a typical day is ≈ $0.40. `DAILY_LLM_BUDGET_USD=2.0` therefore acts as a safety net, not a constraint.
+
+## 12. Notifications (M3)
+
+```
+CanvasSync.run()  ── per scope: HTTP first, then one short transaction ──▶ DB rows
+      │  differ (pure): stored state vs snapshot → events                (first run of a scope: silent)
+      ▼
+dispatch() ── announcement > 500 chars? → Haiku summary (stored once) ──▶ outbox (dedupe_key UNIQUE)
+                                                                             │
+tick (1 min): ladder → outbox ──▶ flush: urgent now · normal after quiet hours · >3 plain → one message
+morning 08:30: digest items (new files, new assignments) + plan
+```
+
+- **Scopes**: `assignments:<course>` (+ the caller's submissions with comments), `groups:<course>`
+  and `files:<course>` (hourly), `announcements` (30-day window), `conversations`, `missing`.
+  Groups sync before assignments (FK); an unknown group id is stored as NULL until the next sync.
+- **Events**: new assignment (digest), due date moved, grade posted (score, letter, class stats if
+  Canvas exposes them, latest teacher comment), new teacher comment, missing flag, announcement,
+  new/updated file (digest), unread inbox message. Own comments are filtered by the Canvas user id.
+- **Ladder**: steps 7d/3d/24h/3h, only the tightest current step, once per assignment and step;
+  skipped for submitted, excused, on-paper/no-submission work and after «Сделал»/«Игнор».
+  «Через 2 ч» creates a reminder.
+- **Grade calculator**: `x = (target − C·(1−w)) / w`; `w` from a Canvas "Final/Exam" group (weighted),
+  an ungraded "final exam" assignment (points), or the exam's known weight; `C` in two scenarios
+  (ungraded work at current average / at zero). Labelled as an estimate.

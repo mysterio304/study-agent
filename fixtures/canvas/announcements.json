@@ -1,0 +1,8 @@
+[
+  {"id": 8801, "title": "Final exam arrangements", "context_code": "course_101", "posted_at": "2026-11-18T09:00:00Z",
+   "html_url": "https://canvas.example.edu/courses/101/discussion_topics/8801",
+   "message": "<p>Dear students,</p><p>The final examination of CS3201 will be held on 8 December 2026 from 09:30 to 11:30 in LT-5 (Academic 1, level 4). It is a closed-book exam; one A4 double-sided cheat sheet is allowed. Please bring your student card and arrive 15 minutes early. The exam covers all topics from Week 1 to Week 12, with emphasis on transport-layer reliability, congestion control and routing algorithms. Past papers from 2023 and 2024 are uploaded under Files &gt; Past Papers. A revision tutorial will be held on 2 December at 14:00 in the usual tutorial room.</p>"},
+  {"id": 8802, "title": "Lab 5 clarification", "context_code": "course_101", "posted_at": "2026-11-18T10:00:00Z",
+   "html_url": "https://canvas.example.edu/courses/101/discussion_topics/8802",
+   "message": "<p>For Lab 5, plot cwnd for at least 60 seconds.</p>"}
+]
