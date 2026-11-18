@@ -1,0 +1,16 @@
+services:
+  agent:
+    build: .
+    image: study-agent:latest
+    container_name: study-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=Asia/Hong_Kong
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

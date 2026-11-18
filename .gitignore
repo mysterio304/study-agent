@@ -1,0 +1,21 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# runtime data (SQLite DB, downloaded course files)
+data/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/

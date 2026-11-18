@@ -1,0 +1,50 @@
+[
+  {
+    "id": 101,
+    "name": "CS3201 Computer Networks (Sem A 2026/27)",
+    "course_code": "CS3201",
+    "apply_assignment_group_weights": true,
+    "enrollments": [{"type": "student", "computed_current_score": 78.4, "computed_current_grade": "B+"}],
+    "syllabus_body": "<h2>Assessment</h2><ul><li>Coursework: 30%</li><li>Final examination: 70%</li></ul>"
+  },
+  {
+    "id": 102,
+    "name": "CS4335 Design and Analysis of Algorithms",
+    "course_code": "CS4335",
+    "apply_assignment_group_weights": true,
+    "enrollments": [{"type": "student", "computed_current_score": 82.0, "computed_current_grade": "A-"}],
+    "syllabus_body": "<p>Assessment: Assignments 20%, Midterm 20%, Final Exam 60%</p>"
+  },
+  {
+    "id": 103,
+    "name": "MA2172 Applied Linear Algebra",
+    "course_code": "MA2172",
+    "apply_assignment_group_weights": false,
+    "enrollments": [{"type": "student", "computed_current_score": 71.5, "computed_current_grade": "B"}],
+    "syllabus_body": null
+  },
+  {
+    "id": 104,
+    "name": "CS4187 Computer Vision for Interactivity",
+    "course_code": "CS4187",
+    "apply_assignment_group_weights": true,
+    "enrollments": [{"type": "student", "computed_current_score": 88.0, "computed_current_grade": "A"}],
+    "syllabus_body": "<p>Coursework 50% / Examination 50%</p>"
+  },
+  {
+    "id": 105,
+    "name": "CS3402 Database Systems",
+    "course_code": "CS3402",
+    "apply_assignment_group_weights": true,
+    "enrollments": [{"type": "student", "computed_current_score": 90.1, "computed_current_grade": "A+"}],
+    "syllabus_body": null
+  },
+  {
+    "id": 106,
+    "name": "GE2410 Chinese Culture and Society",
+    "course_code": "GE2410",
+    "apply_assignment_group_weights": false,
+    "enrollments": [{"type": "student", "computed_current_score": null, "computed_current_grade": null}],
+    "syllabus_body": null
+  }
+]
