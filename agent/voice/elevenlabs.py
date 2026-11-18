@@ -51,8 +51,12 @@ class ElevenLabs:
     def __repr__(self) -> str:
         return f"ElevenLabs(stt={self._stt_model!r}, tts={self._tts_model!r})"
 
-    def use_voice(self, voice_id: str) -> None:
+    def use_voice(self, voice_id: str | None) -> None:
         self._voice_id = voice_id
+
+    @property
+    def voice_id(self) -> str | None:
+        return self._voice_id
 
     @property
     def can_speak(self) -> bool:

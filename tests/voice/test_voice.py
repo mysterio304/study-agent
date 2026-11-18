@@ -106,6 +106,7 @@ def test_gist_and_voice_request_detection() -> None:
 class FakeEl:
     def __init__(self, fail_voice: bool = False) -> None:
         self.calls, self.voice, self.fail_voice = 0, "LIB", fail_voice
+        self.used: list[str] = []
         self.can_speak = True
 
     async def transcribe(self, audio, **kw):
@@ -113,12 +114,17 @@ class FakeEl:
         return SimpleNamespace(text="Сделал TCP", language="rus", duration_s=2.0)
 
     async def synthesize(self, text):
+        self.used.append(self.voice)
         if self.fail_voice and self.voice == "LIB":
             raise VoiceError("paid", 402)
         return OGG
 
     def use_voice(self, voice_id):
         self.voice = voice_id
+
+    @property
+    def voice_id(self):
+        return self.voice
 
 
 @pytest.fixture
@@ -140,7 +146,7 @@ async def test_daily_tts_cap_and_402_fallback(sessionmaker, clk) -> None:
     el = FakeEl(fail_voice=True)
     svc = VoiceService(el, sessionmaker, clk, tts_daily_char_limit=40)
     audio, notice = await svc.speak("Короткий ответ.")
-    assert audio == OGG and el.voice == FALLBACK_VOICE_ID and "платный" in notice
+    assert audio == OGG and el.voice == FALLBACK_VOICE_ID and "тарифу" in notice
     audio, notice = await svc.speak("Ещё один ответ, довольно длинный.")
     assert audio is None and "лимит" in notice
     async with sessionmaker() as s:
@@ -257,3 +263,16 @@ async def test_non_json_stt_response_is_a_voice_error() -> None:
     with pytest.raises(VoiceError):
         await el.transcribe(OGG)
     await el.aclose()
+
+
+async def test_voice_fallback_is_temporary_and_plan_upgrade_is_picked_up(sessionmaker, clk) -> None:
+    el = FakeEl(fail_voice=True)
+    svc = VoiceService(el, sessionmaker, clk, tts_daily_char_limit=10_000)
+    _, notice = await svc.speak("Первый ответ.")
+    assert notice and el.used == ["LIB", FALLBACK_VOICE_ID]
+    await svc.speak("Второй ответ.")  # within the hour: straight to the fallback, no notice spam
+    assert el.used[-1] == FALLBACK_VOICE_ID and el.used.count("LIB") == 1
+    el.fail_voice = False  # the student upgraded their ElevenLabs plan
+    clk.advance(hours=1, minutes=1)
+    audio, notice = await svc.speak("Третий ответ.")
+    assert audio == OGG and notice is None and el.used[-1] == "LIB"

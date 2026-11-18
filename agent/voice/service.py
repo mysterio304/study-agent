@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import re
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -30,6 +31,7 @@ log = logging.getLogger(__name__)
 
 GIST_MAX_CHARS = 300
 FALLBACK_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"  # ElevenLabs premade voice (usable on the free plan)
+FALLBACK_RETRY = timedelta(hours=1)  # after a 402, retry the configured voice this often
 VOICE_REQUEST_RE = re.compile(
     r"(голосом|голосовым|озвучь|скажи вслух|voice reply|reply with voice)", re.I
 )
@@ -71,7 +73,8 @@ class VoiceService:
             clock,
             tts_daily_char_limit,
         )
-        self._fell_back = False
+        self._preferred_voice = client.voice_id  # what ELEVENLABS_VOICE_ID asks for
+        self._fallback_until: datetime | None = None  # temporary: a plan upgrade is picked up
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def transcribe(self, audio: bytes) -> str:
@@ -138,17 +141,21 @@ class VoiceService:
         if await self.chars_today() + len(short) > self._limit:
             return None, "Дневной лимит голосовых ответов исчерпан — отвечаю текстом."
         notice = None
+        now = self._clock.now()
+        in_fallback = self._fallback_until is not None and now < self._fallback_until
+        self._el.use_voice(FALLBACK_VOICE_ID if in_fallback else self._preferred_voice)
         try:
             audio = await self._el.synthesize(short)
         except VoiceError as exc:
-            if exc.status != 402 or self._fell_back:
+            if exc.status != 402 or in_fallback:
                 log.warning("TTS failed: %s", exc)
                 return None, None
+            # The chosen voice needs a paid plan: use a premade voice for a while, then retry it.
+            self._fallback_until = now + FALLBACK_RETRY
             self._el.use_voice(FALLBACK_VOICE_ID)
-            self._fell_back = True
             notice = (
-                "Выбранный голос ElevenLabs требует платный тариф — переключился на стандартный. "
-                "Свой голос можно задать в ELEVENLABS_VOICE_ID."
+                "Выбранный голос ElevenLabs сейчас недоступен по тарифу — временно отвечаю "
+                "стандартным голосом и попробую снова через час."
             )
             audio = await self._el.synthesize(short)
         try:
