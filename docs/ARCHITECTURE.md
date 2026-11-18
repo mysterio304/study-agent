@@ -1,6 +1,6 @@
 # Study Agent — Architecture & DB Schema (v2, 2026-11-18)
 
-Status: v1 and v2 approved; M1–M4 implemented.
+Status: v1 and v2 approved; M1–M5 implemented.
 
 ## 1. Guiding decisions
 
@@ -300,3 +300,23 @@ morning 08:30: digest items (new files, new assignments) + plan
 - **Limits**: `TTS_DAILY_CHAR_LIMIT` (default 3000 chars/day); a TTS failure never loses the text reply.
 - **Free plan**: Voice Library voices return HTTP 402 via the API; the service falls back once to a
   premade voice and tells the student.
+
+## 14. Course files, quizzes and mock exams (M5)
+
+- **Files**: exam-course files (Files API or module items) → `GET /files/:id` → read-only download
+  (size cap 50 MB, locked files skipped) → extraction in a worker thread (PDF per page, PPTX per
+  slide + notes, DOCX per heading section) → chunks ≤ 400 tokens with locators ("p. 12",
+  "slides 3–5") → `chunks` + FTS5 `chunks_fts` (external content, triggers keep it in sync).
+  Files you send in Telegram are indexed the same way. Scanned PDFs are marked `no_text` (no OCR).
+- **Search**: `Retriever` protocol; FTS5 BM25 with quoted-term OR queries (no operator injection);
+  `search_course_files` returns ≤ 5 cited excerpts.
+- **Quizzes**: per-topic bank (`quiz_questions`); Haiku generates schema-constrained questions from
+  the topic's best excerpts; 02:30 Batch for tomorrow's topics, on-demand fallback at block end.
+  Telegram quiz polls (graded by Telegram, no LLM). Verification rules: ≥ 2/3 → full credit and
+  level-up (learn: 0 → 1; two passed practice/review quizzes → 2); fail → half progress, review
+  tomorrow; unanswered 3 h → done, unverified. No questions possible → ✅/✖️ buttons as before.
+- **Diagnostic**: 2 questions per topic; 2/2 → level ≥ 2, 0/2 → level ≤ 1, as a proposal.
+- **Past papers → importance**: topic mention counts in past papers; frequent → ★★★; never mentioned
+  → −1 star only once ≥ 2 papers are indexed; as a proposal.
+- **Mock exams**: one active at a time; pings at half time and 10 min left; score (72 / 72% / 36/50)
+  and lost topics → those topics −1 level and due for review; today's mock blocks marked done.

@@ -23,6 +23,9 @@ TELEGRAM_LIMIT = 4000
 class Notifier(Protocol):
     async def send(self, text: str, kb: InlineKeyboardMarkup | None = None) -> int | None: ...
     async def send_voice(self, audio: bytes, caption: str | None = None) -> int | None: ...
+    async def send_poll(
+        self, question: str, options: list[str], correct: int, explanation: str
+    ) -> str | None: ...
 
 
 def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
@@ -64,6 +67,25 @@ class TelegramNotifier:
             return None
         return msg.message_id
 
+    async def send_poll(
+        self, question: str, options: list[str], correct: int, explanation: str
+    ) -> str | None:
+        """Native quiz poll (Telegram grades it; no LLM). Returns the poll id for answer matching."""
+        try:
+            msg = await self._bot.send_poll(
+                self._owner,
+                question=question,
+                options=options,
+                type="quiz",
+                correct_option_id=correct,
+                explanation=explanation or None,
+                is_anonymous=False,
+            )
+        except TelegramAPIError:
+            log.exception("Failed to send quiz poll")
+            return None
+        return msg.poll.id if msg.poll else None
+
 
 class ConsoleNotifier:
     """Prints messages (HTML tags stripped) — used by dry-run demos."""
@@ -79,3 +101,11 @@ class ConsoleNotifier:
     async def send_voice(self, audio: bytes, caption: str | None = None) -> int | None:
         sys.stdout.write(f"\n── bot (🎙 voice, {len(audio)} bytes) ──\n{caption or ''}\n")
         return 0
+
+    async def send_poll(
+        self, question: str, options: list[str], correct: int, explanation: str
+    ) -> str | None:
+        opts = "  ".join(f"[{'✓' if i == correct else ' '}] {o}" for i, o in enumerate(options))
+        sys.stdout.write(f"\n── bot (quiz poll) ──\n{question}\n  {opts}\n")
+        self._polls = getattr(self, "_polls", 0) + 1
+        return f"console-poll-{self._polls}"

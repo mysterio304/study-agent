@@ -4,7 +4,10 @@ A personal AI agent that lives in Telegram, reads my Canvas LMS (read-only), and
 enforces final-exam preparation**. Telegram is only the interface — the core is a Claude
 tool-use agent plus a deterministic planner, with persistent memory and proactive behaviour.
 
-> Status: **Milestone 4 — voice.** Voice notes are transcribed (ElevenLabs Scribe, cached) and
+> Status: **Milestone 5 — course files & quizzes.** Course files are downloaded, indexed (FTS5)
+> and searched with citations; every finished block ends with 2–3 quiz polls from your own
+> slides (a block counts fully only if passed); optional diagnostic; timed mock-exam mode.
+> Earlier: **Milestone 4 — voice.** Voice notes are transcribed (ElevenLabs Scribe, cached) and
 > handled like text; spoken replies on request, in voice mode, or as a morning brief.
 > Earlier: **Milestone 3 — notifications.** On top of the finals planner and cost-aware agent
 > (M2): Canvas sync with diffing, deadline ladder with buttons, grades with class stats and
@@ -41,6 +44,7 @@ uv run pytest                             # run tests
 uv run python -m agent.cli map --dry-run  # demo: seeded finals + suggested course mapping
 uv run python -m agent.cli plan --dry-run   # demo: topics → first joint plan → pings → replan → undo
 uv run python -m agent.cli notify --dry-run # demo: Canvas changes → grade/announcement/deadline messages
+uv run python -m agent.cli study --dry-run  # demo: files → cited search → block quiz → mock exam
 ```
 
 ### Run against real services
@@ -66,6 +70,9 @@ uv run python -m agent.cli notify --dry-run # demo: Canvas changes → grade/ann
 | `/replan` | Recompute the plan from actual progress (proposal) |
 | `/checkin` | Evening check-in now (answer in free text) |
 | `/voice on\|off`, `/voice brief on\|off` | Voice mode (voice in → voice out); morning voice brief |
+| `/mock` or «начинаю past paper» | Mock exam with a timer for the real exam length → score → weak topics |
+| `/diagnostic <course>` | 2 quiz questions per topic → proposed level changes (button to apply) |
+| PDF / PPTX / DOCX file | Indexed as a past paper or course material for that course |
 | voice note | Transcribed (shown briefly), then handled like text; «ответь голосом» → spoken gist |
 | `/settings [key value]` | Show settings; change one explicitly (the only way to change 🔒 rules) |
 | free text | The agent: Haiku by default, Sonnet for plan negotiation / complex material |
@@ -104,7 +111,7 @@ agent/
   grades/        grade calculator (weighted / points-based) and grade views
   telegram/      whitelist middleware, /start wizard, commands, chat, cards
   voice/         ElevenLabs STT/TTS client, OGG/Opus helpers (ffmpeg only if needed), voice service
-  files/         (upcoming milestone)
+  files/         extraction (PDF/PPTX/DOCX), chunking with locators, FTS5 search, indexer
 tests/           pytest + respx (HTTP mocked)
 fixtures/        synthetic data for --dry-run
 ```

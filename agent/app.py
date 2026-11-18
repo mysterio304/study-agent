@@ -6,8 +6,10 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import anthropic
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from agent.brain.accounting import BudgetState
@@ -22,10 +24,13 @@ from agent.config import Settings
 from agent.core.clock import Clock, SystemClock
 from agent.core.logging import setup_logging
 from agent.db.migrate import upgrade_to_head
+from agent.db.models import CourseFile
 from agent.db.session import make_engine, make_sessionmaker
-from agent.flows import Services, on_topics_ready, quiet_range
+from agent.files.indexer import index_pending
+from agent.flows import Services, on_topics_ready, propose_importance, quiet_range
 from agent.notify.dispatch import summarise
 from agent.prep.discovery import TopicDiscovery
+from agent.prep.quizzes import QuizBank
 from agent.prep.seed import seed_exams
 from agent.telegram.notifier import ConsoleNotifier, Notifier
 from agent.voice.elevenlabs import ElevenLabs
@@ -70,11 +75,44 @@ class App:
         if report.failed_scopes:
             log.warning("Canvas scopes failed: %s", ", ".join(report.failed_scopes[:5]))
 
+    async def index_files(self) -> None:
+        """Scheduled job: download + index a few pending course files (exam courses only)."""
+        try:
+            done = await index_pending(
+                self.sessionmaker, self.canvas, Path(self.settings.data_dir), self.clock
+            )
+        except Exception:
+            log.exception("File indexing failed")
+            return
+        if done:
+            log.info(
+                "Indexed %d files: %s", len(done), ", ".join(f"{r.name} ({r.state})" for r in done)
+            )
+        indexed = [r.file_id for r in done if r.state == "indexed"]
+        if self.svc is None or not indexed:
+            return
+        async with self.sessionmaker() as s:
+            rows = await s.scalars(
+                select(CourseFile).where(
+                    CourseFile.id.in_(indexed), CourseFile.kind == "past_paper"
+                )
+            )
+            courses = {f.course_id for f in rows.all()}
+        for course_id in courses:  # new past papers → topic importance proposal
+            await propose_importance(self.svc, course_id)
+
     def build_services(self, notifier: Notifier | None = None) -> Services:
         """Wire LLM, agent, batches and discovery. Without an API key the agent is disabled and
         topic discovery uses fixtures."""
         notifier = notifier or ConsoleNotifier()
-        svc = Services(self.settings, self.sessionmaker, self.clock, self.canvas, notifier)
+        svc = Services(
+            self.settings,
+            self.sessionmaker,
+            self.clock,
+            self.canvas,
+            notifier,
+            data_dir=Path(self.settings.data_dir),
+        )
         if self.settings.anthropic_api_key is not None:
             client = anthropic.AsyncAnthropic(
                 api_key=self.settings.anthropic_api_key.get_secret_value()
@@ -101,6 +139,14 @@ class App:
             svc.batches = BatchRunner(
                 client.messages.batches, svc.llm, self.sessionmaker, self.settings, self.clock
             )
+            svc.quizzes = QuizBank(self.sessionmaker, svc.llm, svc.batches, self.clock)
+
+            async def diagnostic_ready(meta: dict) -> None:
+                from agent.prep.diagnostic import on_bank_ready  # runtime import: avoids a cycle
+
+                await on_bank_ready(svc, meta)
+
+            svc.quizzes.on_ready.append(diagnostic_ready)
 
         if self.settings.elevenlabs_api_key is not None:
             el = ElevenLabs(

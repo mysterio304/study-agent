@@ -27,6 +27,7 @@ from agent.db.models import (
     Reminder,
     Topic,
 )
+from agent.files.search import FtsRetriever
 from agent.grades.service import need_for_exam, render_need
 from agent.planner.blocks import debt, record_study
 from agent.planner.model import DEFAULT_CUTOFFS, PlannedBlock
@@ -304,7 +305,7 @@ async def set_topic_level(ctx: ToolContext, args: dict[str, Any]) -> str:
     async with ctx.sessionmaker() as s:
         topic = await find_topic(s, args["topic"], args.get("exam"))
         old = topic.level
-        topic.level, topic.progress_min = level, 0
+        topic.level, topic.progress_min, topic.level_changed_at = level, 0, ctx.clock.now()
         await s.commit()
     return f"{topic.name}: уровень {old} → {level}. План учтёт это при ночном пересчёте."
 
@@ -540,6 +541,22 @@ async def list_reminders(ctx: ToolContext, args: dict[str, Any]) -> str:
         )
         or "Напоминаний нет."
     )
+
+
+async def search_course_files(ctx: ToolContext, args: dict[str, Any]) -> str:
+    query = str(args.get("query") or "").strip()
+    if not query:
+        raise ToolError("query: ключевые термины на английском")
+    kinds = ("past_paper",) if args.get("past_papers_only") else None
+    async with ctx.sessionmaker() as s:
+        course_id = None
+        if args.get("course"):
+            exam = await find_exam(s, args["course"])
+            course_id = exam.course_id
+        hits = await FtsRetriever().search(s, query, course_id=course_id, kinds=kinds)
+    if not hits:
+        return "В проиндексированных файлах ничего не найдено (возможно, файлы ещё индексируются)."
+    return "\n\n".join(f"[{i}] {hit.citation()}:\n{hit.text}" for i, hit in enumerate(hits, 1))
 
 
 async def reply_with_voice(ctx: ToolContext, args: dict[str, Any]) -> str:

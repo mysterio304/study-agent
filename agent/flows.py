@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -21,7 +22,14 @@ from agent.planner.render import short_exam
 from agent.planner.service import PlanError, apply_proposal, load_inputs, propose_plan
 from agent.prep import topics_service as ts
 from agent.prep.discovery import TopicDiscovery
+from agent.prep.quizzes import QuizBank
 from agent.prep.settings_service import SettingsError, effective, set_value
+from agent.prep.topic_proposals import (
+    apply_topic_changes,
+    create_topic_proposal,
+    importance_changes,
+    proposal_title,
+)
 from agent.telegram.cards import proposal_card
 from agent.telegram.format import h
 from agent.telegram.keyboards import rating_kb, topic_review_kb
@@ -29,6 +37,8 @@ from agent.telegram.notifier import Notifier
 from agent.voice.service import VoiceService
 
 log = logging.getLogger(__name__)
+
+TOPIC_KINDS = ("topic_levels", "topic_importance")
 
 
 @dataclass
@@ -43,6 +53,8 @@ class Services:
     batches: BatchRunner | None = None
     discovery: TopicDiscovery | None = None
     voice: VoiceService | None = None
+    data_dir: Path = Path("data")
+    quizzes: QuizBank | None = None
 
 
 async def quiet_range(svc: Services) -> TimeRange:
@@ -86,6 +98,19 @@ async def apply_choice(svc: Services, proposal_id: int, option: str) -> str:
             return "Предложение не найдено."
         kind = p.kind
         try:
+            if kind in TOPIC_KINDS:
+                if p.status != "pending":
+                    return "Это предложение уже неактуально."
+                p.chosen_option = option
+                if option == "KEEP":
+                    p.status = "rejected"
+                    await s.commit()
+                    return "Оставил как было."
+                n = await apply_topic_changes(s, p.options_json[0]["changes"], svc.clock)
+                p.status = "applied"
+                await s.commit()
+                await propose_replan(svc, "Пересчёт после обновления тем")
+                return f"Обновил {n} тем(ы)."
             if kind == "settings":
                 if p.status != "pending":
                     return "Это предложение уже неактуально."
@@ -111,6 +136,22 @@ async def apply_choice(svc: Services, proposal_id: int, option: str) -> str:
             return str(exc)
     await propose_replan(svc, "Пересчёт после изменения настроек")
     return "Настройка применена."
+
+
+async def propose_importance(svc: Services, course_id: int) -> int | None:
+    """After a past paper is indexed: topic frequency → importance proposal (button to apply)."""
+    async with svc.sessionmaker() as s:
+        exam = await s.scalar(select(Exam).where(Exam.course_id == course_id))
+        if exam is None:
+            return None
+        changes = await importance_changes(s, exam.id)
+        p = await create_topic_proposal(
+            s, "topic_importance", proposal_title("topic_importance", exam), changes, svc.clock
+        )
+        await s.commit()
+    if p is not None:
+        await send_proposal(svc, p.id)
+    return p.id if p else None
 
 
 # --- setup wizard steps ----------------------------------------------------------------------

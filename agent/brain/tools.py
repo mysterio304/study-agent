@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent.brain import tool_handlers as h
-from agent.brain.budgets import TOOL_RESULT_BUDGET, truncate_to_tokens
+from agent.brain.budgets import (
+    RAG_CHUNK_BUDGET,
+    RAG_MAX_CHUNKS,
+    TOOL_RESULT_BUDGET,
+    truncate_to_tokens,
+)
 from agent.brain.router import Profile
 
 log = logging.getLogger(__name__)
@@ -28,6 +33,7 @@ class Tool:
     description: str
     schema: dict[str, Any]
     handler: Handler
+    result_budget: int = TOOL_RESULT_BUDGET
 
     def definition(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "input_schema": self.schema}
@@ -175,6 +181,14 @@ _TOOLS = [
     ),
     Tool("get_usage", "Today's LLM spend vs budget.", _obj({}), h.get_usage),
     Tool(
+        "search_course_files",
+        "Search the student's course files (lecture slides, notes, past papers) and return the best "
+        "3-5 excerpts with citations. Use English course terms in the query. Cite sources as given.",
+        _obj({"query": S, "course": S, "past_papers_only": {"type": "boolean"}}, ["query"]),
+        h.search_course_files,
+        result_budget=RAG_MAX_CHUNKS * RAG_CHUNK_BUDGET + 150,
+    ),
+    Tool(
         "reply_with_voice",
         "Also send a short spoken gist (≤ 2 sentences, Russian, no lists) as a voice message. Use when "
         "the student asks for a voice answer.",
@@ -216,6 +230,7 @@ PROFILES: dict[Profile, tuple[str, ...]] = {
         "propose_settings_change",
         "reply_with_voice",
         "save_agreement",
+        "search_course_files",
         "set_exam_info",
         "set_topic_level",
     ),
@@ -237,6 +252,7 @@ PROFILES: dict[Profile, tuple[str, ...]] = {
         "get_progress",
         "log_study_session",
         "reply_with_voice",
+        "search_course_files",
         "set_topic_level",
     ),
     "grades": (
@@ -266,7 +282,7 @@ async def run_tool(
         return f"Tool {name} is not available here.", True
     try:
         text = await TOOLS[name].handler(ctx, args if isinstance(args, dict) else {})
-        return truncate_to_tokens(text, TOOL_RESULT_BUDGET), False
+        return truncate_to_tokens(text, TOOLS[name].result_budget), False
     except (h.ToolError, KeyError, TypeError, ValueError) as exc:
         return truncate_to_tokens(f"Error: {exc}", 300), True
     except Exception:  # tool bug: log, tell the model, keep the turn alive

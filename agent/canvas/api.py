@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any, Protocol
 
-from agent.canvas.client import CanvasClient
+from agent.canvas.client import CanvasClient, CanvasError
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,11 @@ class CanvasSource(Protocol):
     async def list_conversations(self) -> list[dict[str, Any]] | None: ...
     async def list_my_submissions(self, course_id: int) -> list[dict[str, Any]] | None: ...
     async def get_self_id(self) -> int: ...
+    async def download_file(self, file_id: int, dest: Path, *, max_bytes: int) -> int: ...
+
+
+class FileUnavailable(CanvasError):
+    """Locked, too large, or otherwise not downloadable for this student."""
 
 
 class CanvasAPI:
@@ -126,6 +132,17 @@ class CanvasAPI:
 
     async def get_self_id(self) -> int:
         return int((await self._c.get_json("/api/v1/users/self"))["id"])
+
+    async def download_file(self, file_id: int, dest: Path, *, max_bytes: int) -> int:
+        """GET /files/:id for the download URL, then fetch it (read-only; token stays on Canvas)."""
+        meta = await self._c.get_json(f"/api/v1/files/{file_id}")
+        if meta.get("locked_for_user") or meta.get("hidden_for_user"):
+            raise FileUnavailable("File is locked for this student")
+        if (meta.get("size") or 0) > max_bytes:
+            raise FileUnavailable(f"File larger than {max_bytes // 1_000_000} MB")
+        if not meta.get("url"):
+            raise FileUnavailable("No download URL")
+        return await self._c.download(meta["url"], dest, max_bytes=max_bytes)
 
     async def list_my_submissions(self, course_id: int) -> list[dict[str, Any]] | None:
         """The caller's submissions for every assignment in a course, with grader comments."""

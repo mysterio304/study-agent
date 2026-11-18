@@ -28,6 +28,12 @@ class Recorder:
         self.messages.append((f"[voice] {caption or ''}", None))
         return len(self.messages)
 
+    async def send_poll(
+        self, question: str, options: list[str], correct: int, explanation: str
+    ) -> str:
+        self.messages.append((f"[poll] {question}", None))
+        return f"poll-{len(self.messages)}"
+
     def texts(self) -> list[str]:
         return [t for t, _ in self.messages]
 

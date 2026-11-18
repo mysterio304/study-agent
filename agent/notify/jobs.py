@@ -18,16 +18,28 @@ from agent.db.models import Block, Exam, Proposal, Reminder, Topic
 from agent.flows import Services, propose_replan, quiet_range, send_proposal
 from agent.notify.ladder import run_ladder
 from agent.notify.outbox import flush, mark_digest_sent, pending_digest
+from agent.notify.quizpolls import send_quiz_polls
 from agent.notify.recheck import refresh_message
 from agent.notify.report import weekly_report
 from agent.planner.blocks import auto_move_missed, has_plan, mark_missed_blocks
 from agent.planner.render import fmt_day
 from agent.planner.service import load_inputs
 from agent.prep import checkin
+from agent.prep.diagnostic import maybe_finish
+from agent.prep.mock import due_pings as mock_due_pings
+from agent.prep.mock import expire_unanswered as mock_expire_unanswered
+from agent.prep.quizzes import (
+    QUESTIONS_PER_BLOCK,
+    expire_stale,
+    generate_on_demand,
+    start_quiz,
+    unused_count,
+)
 from agent.prep.settings_service import effective
 from agent.telegram.cards import block_ping, day_view, morning_brief_text, morning_digest
 from agent.telegram.format import h
 from agent.telegram.keyboards import block_end_kb, block_start_kb, checkin_kb
+from agent.telegram.mock import SCORE_QUESTION
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +55,8 @@ async def tick(svc: Services) -> None:
         _block_ends,
         _reminders,
         _expire_proposals,
+        _expire_quizzes,
+        _mock_pings,
         _ladder,
         _flush_outbox,
     )
@@ -124,11 +138,65 @@ async def _block_ends(svc: Services) -> None:
         to_send = []
         for b in ended:
             _exam, topic = await _names(s, b)
-            to_send.append((b.id, f"Блок закончился: {h(topic)}. Как прошло?"))
-            b.ping_count = END_ASKED
+            to_send.append((b.id, b.topic_id, topic))
+            b.ping_count = END_ASKED  # committed before sending: never asked twice
         await s.commit()
-    for block_id, text in to_send:
-        await svc.notifier.send(text, block_end_kb(block_id))
+    for block_id, topic_id, topic in to_send:
+        if topic_id is not None and await send_verification_quiz(svc, block_id, topic_id, topic):
+            continue
+        await svc.notifier.send(f"Блок закончился: {h(topic)}. Как прошло?", block_end_kb(block_id))
+
+
+async def send_verification_quiz(svc: Services, block_id: int, topic_id: int, topic: str) -> bool:
+    """2–3 quiz polls from the course files; False → caller falls back to ✅/✖️ buttons."""
+    async with svc.sessionmaker() as s:
+        short = await unused_count(s, topic_id) < QUESTIONS_PER_BLOCK
+    if short and svc.llm is not None:  # nightly batch didn't cover it → one on-demand call
+        await generate_on_demand(svc.sessionmaker, svc.llm, topic_id, svc.clock)
+    async with svc.sessionmaker() as s:
+        quiz = await start_quiz(
+            s, topic_id, svc.clock, purpose="verification", block_id=block_id, n=QUESTIONS_PER_BLOCK
+        )
+        await s.commit()
+    if quiz is None:
+        return False
+    await svc.notifier.send(
+        f"Блок закончился: <b>{h(topic)}</b>. {len(quiz.questions_json)} вопроса — "
+        "чтобы засчитать блок (≥ 2/3 верно):"
+    )
+    if not await send_quiz_polls(svc, quiz.id):
+        await svc.notifier.send("Не получилось отправить квиз — блок засчитан без проверки.")
+    return True
+
+
+MOCK_PING_TEXT = {
+    "half": "⏱ Половина времени mock-экзамена прошла.",
+    "last10": "⏱ Осталось 10 минут — проверь ответы.",
+}
+
+
+async def _mock_pings(svc: Services) -> None:
+    async with svc.sessionmaker() as s:
+        pings = await mock_due_pings(s, svc.clock)
+        await mock_expire_unanswered(s, svc.clock)
+        await s.commit()
+    for p in pings:
+        await svc.notifier.send(SCORE_QUESTION if p.kind == "end" else MOCK_PING_TEXT[p.kind])
+
+
+async def _expire_quizzes(svc: Services) -> None:
+    async with svc.sessionmaker() as s:
+        outcomes = await expire_stale(s, svc.clock)
+        await s.commit()
+    if any(o.purpose == "verification" for o in outcomes):
+        await svc.notifier.send(
+            "Квиз остался без ответа — блок засчитан как сделанный, но без проверки."
+        )
+    for o in outcomes:
+        if (
+            o.purpose == "diagnostic"
+        ):  # an unanswered question must not stall the diagnostic forever
+            await maybe_finish(svc, o.quiz_id)
 
 
 async def _reminders(svc: Services) -> None:

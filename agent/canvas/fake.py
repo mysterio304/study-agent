@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import date
@@ -54,6 +55,22 @@ class FakeCanvasSource:
 
     async def get_self_id(self) -> int:
         return 7
+
+    async def download_file(self, file_id: int, dest: Path, *, max_bytes: int) -> int:
+        """Copies fixtures/files/<id>.* (a missing fixture behaves like a locked file)."""
+        from agent.canvas.api import FileUnavailable
+
+        matches = sorted((self._root.parent / "files").glob(f"{file_id}.*"))
+        if not matches:
+            raise FileUnavailable("fixture file not found")
+
+        def copy() -> int:
+            data = matches[0].read_bytes()[:max_bytes]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            return len(data)
+
+        return await asyncio.to_thread(copy)
 
     async def list_my_submissions(self, course_id: int) -> list[dict[str, Any]] | None:
         return self._load(f"submissions_{course_id}", [])

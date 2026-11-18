@@ -32,5 +32,13 @@ def test_dispatcher_wires_whitelist_and_routers(sessionmaker) -> None:
     )
     dp = build_dispatcher(settings, svc)
     assert any(isinstance(m, OwnerOnlyMiddleware) for m in dp.update.outer_middleware)
-    assert {r.name for r in dp.sub_routers} == {"setup_wizard", "commands", "voice", "chat"}
+    assert {r.name for r in dp.sub_routers} == {
+        "setup_wizard",
+        "commands",
+        "quiz",
+        "mock",
+        "voice",
+        "files",
+        "chat",
+    }
     assert dp.workflow_data["svc"] is svc

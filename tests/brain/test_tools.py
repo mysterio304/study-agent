@@ -180,3 +180,11 @@ async def test_bad_dates_and_caps_in_plan_change(ctx) -> None:
         profile="plan",
     )
     assert err
+
+
+def test_material_profile_can_search_course_files() -> None:
+    from agent.brain.tools import PROFILES
+
+    assert (
+        "search_course_files" in PROFILES["material"] and "search_course_files" in PROFILES["chat"]
+    )

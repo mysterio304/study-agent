@@ -195,10 +195,10 @@ class CanvasClient:
                     else httpx.URL(first.headers["Location"])
                 )
             else:
-                return _write_capped(dest, first.content, max_bytes)
+                return await asyncio.to_thread(_write_capped, dest, first.content, max_bytes)
         if self._same_host(target):
             response = await self.request("GET", str(target))
-            return _write_capped(dest, response.content, max_bytes)
+            return await asyncio.to_thread(_write_capped, dest, response.content, max_bytes)
         dest.parent.mkdir(parents=True, exist_ok=True)
         written = 0
         too_big = False

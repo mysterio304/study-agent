@@ -23,6 +23,7 @@ from agent.telegram.notifier import TelegramNotifier
 
 log = logging.getLogger("agent")
 NIGHTLY_REPLAN = (3, 30)
+NIGHTLY_QUIZZES = (2, 30)  # one Batch for tomorrow's topics
 WEEKLY_REPORT = ("sun", 20)
 
 
@@ -50,6 +51,18 @@ def _schedule_jobs(app: App, svc: Services) -> AsyncIOScheduler:
     scheduler.add_job(
         _guard("tick", lambda: jobs.tick(svc)), "interval", minutes=1, id="tick", **common
     )
+    scheduler.add_job(
+        _guard("index_files", app.index_files), "interval", minutes=10, id="index_files", **common
+    )
+    if svc.quizzes is not None:
+        scheduler.add_job(
+            _guard("nightly_quizzes", svc.quizzes.nightly),
+            "cron",
+            hour=NIGHTLY_QUIZZES[0],
+            minute=NIGHTLY_QUIZZES[1],
+            id="nightly_quizzes",
+            **common,
+        )
     scheduler.add_job(
         _guard("morning", lambda: jobs.morning(svc)),
         "cron",

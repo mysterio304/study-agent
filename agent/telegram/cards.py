@@ -26,6 +26,12 @@ def proposal_card(p: Proposal) -> tuple[str, InlineKeyboardMarkup]:
     if p.kind == "settings":
         text = f"<b>Изменить настройку?</b>\n{h(p.summary_ru)}\nПосле применения пересчитаю план."
         return text, proposal_kb(p.id, p.options_json, single_label="✅ Применить")
+    if p.kind in ("topic_levels", "topic_importance"):
+        changes = p.options_json[0].get("changes", [])
+        text = f"<b>{h(p.summary_ru)}</b>\n" + "\n".join(f"• {h(c['label'])}" for c in changes[:20])
+        return text + "\nПрименить? План пересчитаю.", proposal_kb(
+            p.id, p.options_json, single_label="✅ Применить"
+        )
     lines = [f"<b>Предложение #{p.id}</b>: {h(p.summary_ru)}"]
     for o in p.options_json:
         if o["key"] == "KEEP":

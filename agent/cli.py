@@ -12,24 +12,39 @@ from __future__ import annotations
 import argparse
 import asyncio
 import html
+import json
 import re
 import sys
 from collections import Counter
 from datetime import datetime, time, timedelta
+from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from agent.app import App, build_app
 from agent.canvas.sync import sync_courses
 from agent.config import get_settings
 from agent.core.clock import FixedClock
 from agent.core.timeutil import local_to_utc
-from agent.db.models import Base, Exam, Proposal, SyncState
+from agent.db.models import (
+    Base,
+    Block,
+    Chunk,
+    CourseFile,
+    Exam,
+    MockExam,
+    PlanVersion,
+    Proposal,
+    Quiz,
+    SyncState,
+    Topic,
+)
 from agent.flows import Services, apply_choice, continue_setup, on_topics_ready
 from agent.grades.service import deadlines_view, grades_view, need_for_exam, render_need
 from agent.notify import jobs
 from agent.planner.render import fmt_day, group_by_day, short_exam
 from agent.planner.service import future_blocks, load_inputs, propose_undo
+from agent.prep import mock as mock_mod
 from agent.prep import topics_service as ts
 from agent.prep.discovery import TopicDiscovery
 from agent.prep.mapping_service import (
@@ -38,10 +53,12 @@ from agent.prep.mapping_service import (
     list_courses,
     suggestions_for_unconfirmed,
 )
+from agent.prep.quizzes import record_answer, store_questions
 from agent.telegram.cards import day_view, progress_view
 from agent.telegram.format import fmt_dt
 from agent.telegram.notifier import ConsoleNotifier
 
+QUIZ_BANK_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "quiz_bank.json"
 DEMO_LEVELS = {1: 1, 2: 1, 3: 2, 4: 2}  # self-rating used by the demo (per exam id)
 
 
@@ -193,7 +210,121 @@ async def demo_notify(app: App) -> None:
         _out("\n" + render_need(exam, await need_for_exam(s, exam), ["A", "A-"]))
 
 
-COMMANDS = {"sync": demo_sync, "map": demo_mapping, "plan": demo_plan, "notify": demo_notify}
+async def demo_study(app: App) -> None:
+    """M5 walkthrough: course files → index → cited search → verification quiz → mock exam."""
+    clock = app.clock
+    assert isinstance(clock, FixedClock)
+    svc = app.build_services(ConsoleNotifier())
+    svc.llm = svc.agent = svc.batches = svc.quizzes = svc.voice = None  # offline
+    svc.data_dir = Path(app.settings.data_dir) / "dry_run"
+    app.settings = app.settings.model_copy(update={"data_dir": str(svc.data_dir)})
+
+    async def ready(exam_id: int) -> None:
+        return None
+
+    svc.discovery = TopicDiscovery(app.sessionmaker, app.canvas, None, None, clock, ready)
+    async with app.sessionmaker() as s:
+        await sync_courses(s, app.canvas, clock)
+        for exam, sug in await suggestions_for_unconfirmed(s):
+            await confirm_mapping(s, exam.id, sug.course_id)
+        await s.commit()
+    await svc.discovery.start()
+    async with app.sessionmaker() as s:
+        for exam_id, level in DEMO_LEVELS.items():
+            await ts.accept_topics(s, exam_id)
+            await ts.rate_rest_of_exam(s, exam_id, level)
+        await s.commit()
+
+    _section("1. Canvas files (module items, Files tab hidden) → download → extract → FTS index")
+    await app.sync_canvas()
+    await app.index_files()
+    async with app.sessionmaker() as s:
+        for f in (await s.scalars(select(CourseFile).order_by(CourseFile.id))).all():
+            n = await s.scalar(select(func.count()).select_from(Chunk).where(Chunk.file_id == f.id))
+            _out(f"  {f.display_name:<38} {f.kind:<10} {f.index_state:<9} {n} chunks")
+
+    _section("2. Agent tool search_course_files (no LLM): cited excerpts")
+    from agent.brain.tool_handlers import ToolContext
+    from agent.brain.tools import run_tool
+
+    text, _ = await run_tool(
+        ToolContext(app.sessionmaker, app.settings, clock),
+        "material",
+        "search_course_files",
+        {"query": "fast retransmit triple duplicate ACK cwnd", "course": "Networks"},
+    )
+    _out(text)
+
+    _section("3. Block ends → 3 quiz polls from the topic bank (filled overnight by a Batch)")
+    bank = json.loads(await asyncio.to_thread(QUIZ_BANK_FIXTURE.read_text))
+    async with app.sessionmaker() as s:
+        topic = await s.scalar(
+            select(Topic).where(Topic.name == "TCP reliability & congestion control")
+        )
+        await store_questions(s, topic.id, bank[topic.name], "batch", clock)
+        v = PlanVersion(
+            created_at=clock.now(),
+            reason="demo",
+            proposed_by="planner",
+            applied_at=clock.now(),
+            snapshot_json={"blocks": []},
+        )
+        s.add(v)
+        await s.flush()
+        s.add(
+            Block(
+                plan_version_id=v.id,
+                starts_at=clock.now() - timedelta(minutes=50),
+                ends_at=clock.now(),
+                exam_id=topic.exam_id,
+                topic_id=topic.id,
+                kind="learn",
+                status="started",
+            )
+        )
+        await s.commit()
+    await jobs.tick(svc)
+    async with app.sessionmaker() as s:
+        quiz = await s.scalar(select(Quiz).order_by(Quiz.id.desc()))
+        outcome = None
+        for i, q in enumerate(quiz.questions_json):  # student answers: 2 right, 1 wrong
+            outcome = await record_answer(
+                s, q["poll_id"], q["correct"] if i < 2 else (q["correct"] + 1) % 4, clock
+            )
+        await s.commit()
+    from agent.telegram.quiz import outcome_text
+
+    _out("\n── bot ──\n" + (outcome_text(outcome, outcome.purpose) or ""))
+
+    _section("4. «начинаю past paper» → 120-min timer → score → weak topics")
+    async with app.sessionmaker() as s:
+        networks = await s.scalar(select(Exam).where(Exam.title == "Computer Networks"))
+        paper = await s.scalar(select(CourseFile).where(CourseFile.kind == "past_paper"))
+        m = await mock_mod.start_mock(s, networks.id, paper.id if paper else None, clock)
+        await s.commit()
+    _out(f"  mock #{m.id} started, ends {fmt_dt(m.ends_at, clock.zone)}")
+    for minutes in (61, 50, 10):
+        clock.advance(minutes=minutes)
+        await jobs.tick(svc)
+    async with app.sessionmaker() as s:
+        m = await s.get(MockExam, m.id)
+        await mock_mod.record_score(s, m, mock_mod.parse_score("36/50"))
+        routing = await s.scalar(select(Topic).where(Topic.name == "Routing algorithms"))
+        await mock_mod.toggle_topic(s, m.id, routing.id)
+        _, weakened = await mock_mod.finish(s, m.id, clock)
+        await s.commit()
+    _out(
+        f"\n── bot ──\nЗаписал mock: 72%. Слабые темы: {', '.join(weakened)} — ночью план добавит им блоков."
+    )
+
+
+COMMANDS = {
+    "sync": demo_sync,
+    "map": demo_mapping,
+    "plan": demo_plan,
+    "notify": demo_notify,
+    "study": demo_study,
+}
 
 
 async def _reset_dry_run_db(app: App) -> None:
@@ -212,7 +343,7 @@ async def _amain(command: str, dry_run: bool) -> None:
     if not dry_run:
         settings.require_live()
     clock = None
-    if command in ("plan", "notify"):
+    if command in ("plan", "notify", "study"):
         if not dry_run:
             raise SystemExit(f"The {command} walkthrough only runs with --dry-run.")
         start = (
@@ -225,7 +356,7 @@ async def _amain(command: str, dry_run: bool) -> None:
         clock = FixedClock(start, settings.zone)
         settings = settings.model_copy(update={"anthropic_api_key": None, "log_level": "WARNING"})
     async with build_app(settings, dry_run=dry_run, clock=clock) as app:
-        if command in ("plan", "notify"):
+        if command in ("plan", "notify", "study"):
             await _reset_dry_run_db(app)
         elif command == "map":
             await app.sync_canvas()

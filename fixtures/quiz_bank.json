@@ -1,0 +1,7 @@
+{
+  "TCP reliability & congestion control": [
+    {"question": "In TCP congestion avoidance, how does cwnd grow?", "options": ["Doubles every RTT", "+1 MSS per RTT", "Halves every RTT", "Stays constant"], "correct": 1, "explanation": "Additive increase: +1 MSS за RTT.", "source": "Lecture 4 - TCP.pdf, p. 2"},
+    {"question": "What happens to cwnd after a triple duplicate ACK (fast recovery)?", "options": ["Reset to 1 MSS", "Halved", "Doubled", "Unchanged"], "correct": 1, "explanation": "Multiplicative decrease: cwnd делится пополам.", "source": "Lecture 4 - TCP.pdf, p. 3"},
+    {"question": "When does slow start end?", "options": ["When cwnd reaches ssthresh", "After 10 RTTs", "On the first ACK", "Never"], "correct": 0, "explanation": "Slow start длится до ssthresh.", "source": "Lecture 4 - TCP.pdf, p. 3"}
+  ]
+}

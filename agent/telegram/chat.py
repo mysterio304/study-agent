@@ -21,6 +21,7 @@ from agent.prep import checkin
 from agent.prep.settings_service import effective
 from agent.telegram.format import h
 from agent.telegram.keyboards import BlockCb, CheckinCb, DeadlineCb, PropCb
+from agent.telegram.mock import handle_mock_text
 from agent.voice.service import wants_voice
 
 log = logging.getLogger(__name__)
@@ -129,8 +130,10 @@ async def on_text(message: Message, svc: Services) -> None:
 
 
 async def handle_user_text(message: Message, svc: Services, text: str, *, via: str) -> None:
-    """Shared by text and voice: check-in answer first, otherwise the agent. Voice replies are a
-    short gist; the full answer is always sent as text too."""
+    """Shared by text and voice: mock-exam flow, then check-in answer, otherwise the agent. Voice
+    replies are a short gist; the full answer is always sent as text too."""
+    if await handle_mock_text(message, svc, text):
+        return
     if svc.agent is None or svc.llm is None:
         await message.answer(
             "Агент не настроен (нет ANTHROPIC_API_KEY). Команды /today, /plan, /progress работают."

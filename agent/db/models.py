@@ -207,6 +207,7 @@ class Topic(Base):
     review_step: Mapped[int] = mapped_column(Integer, default=0)
     # Study minutes logged since the level last changed; reduces the planner's remaining effort.
     progress_min: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    level_changed_at: Mapped[datetime | None]
 
 
 class PlanVersion(Base):
@@ -298,6 +299,9 @@ class MockExam(Base):
     finished_at: Mapped[datetime | None]
     score_pct: Mapped[float | None] = mapped_column(Float)
     lost_topics_json: Mapped[list[Any] | None]
+    # running → awaiting_score → awaiting_topics → done (or cancelled)
+    state: Mapped[str] = mapped_column(String(16), default="running", server_default="running")
+    pings_sent: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class Agreement(Base):
@@ -413,3 +417,18 @@ class SttTranscript(Base):
     text: Mapped[str] = mapped_column(Text)
     model: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime]
+
+
+class Chunk(Base):
+    """A searchable piece of a course file (≤ ~400 tokens) with its source locator.
+    Mirrored into the FTS5 table `chunks_fts` by triggers (migration 0004)."""
+
+    __tablename__ = "chunks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    file_id: Mapped[int] = mapped_column(
+        ForeignKey("course_files.id", ondelete="CASCADE"), index=True
+    )
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id"), index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    locator: Mapped[str] = mapped_column(String(64))  # "p. 12" / "slide 7" / "§3"
+    text: Mapped[str] = mapped_column(Text)
