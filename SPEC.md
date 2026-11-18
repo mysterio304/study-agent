@@ -64,8 +64,9 @@ ELEVENLABS_STT_MODEL=scribe_v2
 ELEVENLABS_TTS_MODEL=       # current multilingual model, check ElevenLabs docs
 ELEVENLABS_VOICE_ID=
 ANTHROPIC_API_KEY=
-AGENT_MODEL=claude-sonnet-5-5
-CHEAP_MODEL=claude-haiku-5-5
+CHEAP_MODEL=claude-haiku-5-5     # default model for everything (see §9a)
+SMART_MODEL=claude-sonnet-5-5    # escalation only (see §9a)
+CACHE_TTL=5m                     # 5m | 1h — chosen from measured usage (see §9a.3)
 TZ=Asia/Hong_Kong
 DAILY_STUDY_CAP_HOURS=6.5   # rises to 8.5 in the final week before Dec 8 (configurable)
 QUIET_HOURS=00:30-08:00     # placeholder, I'll confirm
@@ -74,6 +75,7 @@ EVENING_CHECKIN_TIME=21:30
 AUTONOMY_MODE=small_auto    # small_auto | confirm_all
 MAX_AGENT_STEPS=8
 DAILY_LLM_BUDGET_USD=2.0
+LLM_BUDGET_WARN_PCT=80
 ```
 
 ## 3. Hard safety rules (enforce in code, not only in the prompt)
@@ -81,7 +83,7 @@ DAILY_LLM_BUDGET_USD=2.0
 1. **Whitelist**: middleware drops every update not from `TELEGRAM_OWNER_ID`.
 2. **Canvas is read-only**: the Canvas client must refuse any method other than `GET` (raise an exception). File downloads are GET and allowed. No submissions, posts, discussion replies, profile changes — ever.
 3. **Plan changes require confirmation**: the agent can *propose* a change (with a diff and options A/B), but applies it only after I press a button. Exception: if `AUTONOMY_MODE=small_auto`, it may move a single missed block to the next free slot and must notify me.
-4. **Budgets**: max `MAX_AGENT_STEPS` tool calls per user turn; track daily LLM spend; when the daily budget is hit, degrade gracefully (templated notifications still work, agent says it's over budget).
+4. **Budgets**: max `MAX_AGENT_STEPS` tool calls per user turn; every LLM call is logged with its cost; at `LLM_BUDGET_WARN_PCT` of `DAILY_LLM_BUDGET_USD` I get a warning; at 100% the agent switches to Haiku-only + templates and tells me; at 150% LLM calls stop for the day (templated notifications keep working). Details in §9a.8.
 5. **Non-negotiables in the planner** (can only be changed via an explicit settings command, never through casual chat): review session the day before each exam; no new topics the day before an exam; protected sleep before the 09:30 exam on Dec 8; no study blocks during exams.
 
 ## 4. Canvas integration (read-only)
@@ -105,7 +107,8 @@ DAILY_LLM_BUDGET_USD=2.0
 - **Deadline ladder**: 7d, 3d, 24h, 3h before due, only if not submitted. Inline buttons: «Сделал» / «Напомни через 2 ч» / «Игнор».
 - **Missing submissions** alert.
 - **New grades**: score, grade, teacher comment, and class mean/min/max if `score_statistics` is available.
-- **Announcements**: short Russian summary + link.
+- **Announcements**: short Russian summary + link. Summarised by the LLM **only if the text is longer than ~500 chars**; shorter ones are sent as-is (trimmed). Summaries are stored and never regenerated.
+- All notifications (deadlines, grades, new files, block pings, morning plan, check-in prompts) are **templates — no LLM**.
 - **New files** in a course; **inbox messages**; **submission comments**.
 - **Quiet hours**: non-urgent messages go to an outbox and are flushed after quiet hours. The 3h deadline reminder is urgent and bypasses quiet hours.
 
@@ -197,29 +200,76 @@ Using assignment group weights and graded/ungraded work, compute the score neede
   - Honest, not sycophantic: if I ask for something risky ("забью на сети до 3 декабря"), it states the consequences clearly; the final decision is mine.
   - Can explain *why* the plan is what it is.
   - Proactive but not spammy.
-- Context per turn: today's date/time HKT, upcoming exams + days left, today's plan, debt, recent sessions, relevant agreements, last N messages. Keep it compact.
-- Use `CHEAP_MODEL` for summaries and quiz generation, `AGENT_MODEL` for the conversation loop.
+- Context per turn: today's date/time HKT, upcoming exams + days left, today's plan, debt, recent sessions, relevant agreements, last 6–8 messages + rolling summary. Compact, see §9a.4.
+- Model choice is rule-based routing, see §9a.2 (`CHEAP_MODEL` by default, `SMART_MODEL` only for listed cases).
+- Extra tools: `escalate(reason)` (Haiku hands the turn to Sonnet), `get_usage(period)`.
+
+## 9a. Token efficiency (runtime Claude API cost) — requirements
+
+### 1. Deterministic first, LLM last
+- Priority scores, scheduling, replanning math, grade calculator, deadline ladder, diffing: **pure Python**. The LLM never computes the plan; it only explains, negotiates, and parses free-form input.
+- Notifications use templates (see §5). Only announcement summaries use the LLM, and only above ~500 chars; summaries are stored, never re-summarised.
+
+### 2. Model routing
+- Default model: `CHEAP_MODEL` (claude-haiku-5-5).
+- Escalate to `SMART_MODEL` (claude-sonnet-5-5) **only** for: writing up a new plan version (the planner computes it; Sonnet explains the diff), plan-change negotiation, diagnostic analysis, complex questions about course material.
+- Routing is **rule-based** (by command, job type, detected intent via keywords/state), never an extra LLM call. Haiku can call an `escalate` tool when a task is beyond it; the turn then continues on Sonnet.
+- A Haiku refusal (`stop_reason: "refusal"`) is retried once on Sonnet (Haiku has no server-side fallback).
+
+### 3. Prompt caching
+- Request order: **tools → system prompt → static user profile/agreements → [cache breakpoint] → rolling summary + history → [automatic breakpoint] → dynamic context + new message**. (Dynamic context rides in the newest user turn so that history stays cacheable; within one turn's tool loop the whole prefix is cached.)
+- Tool definitions and system prompt are **byte-stable**: no timestamps, no random ordering, tools sorted by name, JSON serialised deterministically.
+- Tool subsets per intent (§4) are a **small fixed set of toolset profiles**, each byte-stable, so each profile keeps its own cache entry instead of breaking the cache every turn.
+- TTL: `CACHE_TTL` (5m default). Log `ephemeral_5m`/`ephemeral_1h` write tokens and request gaps; `/usage cache` shows what the other TTL would have cost, and I switch to the cheaper one after a few days of real data.
+
+### 4. Compact context
+- Dynamic context (date, exams, today's plan, debt, recent sessions): compact summary, **target ≤ 1,500 tokens**.
+- History: last 6–8 messages + a rolling summary of older ones (summary refreshed by Haiku only when the window rolls over). Past turns are stored as plain text (no tool/thinking blocks).
+- Tool results return only the needed fields, truncated — **never raw Canvas JSON**.
+- RAG: top 3–5 chunks, **≤ 400 tokens each**, with citations. Never whole files.
+- **Hard guard**: a Haiku request must never exceed 100K input tokens (price jumps above that). Estimate conservatively before sending; assert and truncate (oldest history first, then RAG, then tool results).
+- Expose only the toolset profile relevant to the detected intent.
+
+### 5. Output limits
+- `max_tokens` per call type (chat reply, JSON parse, quiz, summary), sized to include thinking tokens.
+- Thinking is off (or `low` effort) for parse/summary/quiz calls; chat uses `low` effort unless escalated.
+- System prompt asks for concise answers; structured outputs are compact JSON.
+
+### 6. Reuse and batch
+- Quiz questions are cached per topic and reused; tomorrow's verification quizzes are generated overnight through the **Message Batches API** (50% cheaper), with an on-demand fallback if the batch isn't ready.
+- One-time file indexing (only LLM parts) and topic discovery also go through Batches where possible.
+- STT transcripts are cached (by file hash); TTS only on explicit request / voice mode, short text only.
+
+### 7. Agent loop
+- `MAX_AGENT_STEPS` limit, parallel tool calls when independent (all results returned in one message), stop as soon as the answer is ready.
+
+### 8. Accounting
+- Every LLM call is logged: model, purpose, input / cache-read / cache-write (5m/1h) / output tokens, cost in USD (configurable price table).
+- `/usage` command: today, last 7 days, by purpose and by model, plus cache hit rate.
+- Budget: warn at `LLM_BUDGET_WARN_PCT`%, at 100% Haiku-only + templates (and tell me), at 150% no LLM until midnight HKT.
+- **Tests assert prompt-size budgets for each call type** (static prefix, dynamic context, history, RAG, tool results, total).
 
 ## 10. Commands (besides free-form chat/voice)
 
-`/start` (setup wizard: course mapping, topic review, diagnostic, settings), `/today`, `/plan`, `/progress`, `/deadlines`, `/grades`, `/need <course> <grade>`, `/voice on|off`, `/settings`, `/undo`.
+`/start` (setup wizard: course mapping, topic review, diagnostic, settings), `/today`, `/plan`, `/progress`, `/deadlines`, `/grades`, `/need <course> <grade>`, `/voice on|off`, `/settings`, `/undo`, `/usage`.
+Commands that only show data (`/today`, `/plan`, `/progress`, `/deadlines`, `/grades`, `/need`, `/usage`) are answered from templates with **no LLM call**.
 
 ## 11. Milestones (commit after each, show me a short demo/test output)
 
 Order is driven by the Dec 8 deadline:
 
 1. **Skeleton**: config, DB, whitelist, read-only Canvas client with tests, course mapping, deploy setup (Docker) so it can run 24/7 early.
-2. **Agent loop + finals planner MVP**: exams seeded, topic discovery + my review, self-rating (diagnostic can come later), priority + daily plan, morning plan, block pings, evening check-in, nightly replanning, plan proposals with confirmation + undo. **Target: usable ASAP.**
-3. **Notifications**: deadlines ladder with buttons, grades, announcements, files, inbox, quiet-hours outbox, digests.
-4. **Voice**: STT input, TTS output modes.
-5. **Files/RAG**: download, extraction, FTS search, verification quizzes, diagnostic, mock exam mode.
-6. **Hardening**: budgets, error handling/retries/backoff for Canvas & APIs, logging without secrets, README with setup steps.
+2. **Agent loop + finals planner MVP**: exams seeded, topic discovery + my review, self-rating (diagnostic can come later), priority + daily plan, morning plan, block pings, evening check-in, nightly replanning, plan proposals with confirmation + undo. **Token-efficiency core from §9a**: model routing + `escalate`, caching layout + toolset profiles, compact context + rolling summary, max_tokens per call type, usage logging, `/usage`, budget enforcement, prompt-size budget tests. **Target: usable ASAP.**
+3. **Notifications**: deadlines ladder with buttons, grades, announcements (summary only > 500 chars, stored), files, inbox, quiet-hours outbox, digests — all templated.
+4. **Voice**: STT input (transcripts cached), TTS output modes (short text only).
+5. **Files/RAG**: download, extraction, FTS search (3–5 chunks ≤ 400 tokens), verification quizzes (cached per topic, nightly Batches + on-demand fallback), diagnostic, mock exam mode, Batches for topic discovery/indexing.
+6. **Hardening**: error handling/retries/backoff for Canvas & APIs, logging without secrets, cache-TTL decision from real usage logs, README with setup steps.
 
 ## 12. How I want you to work
 
 - Start by reading this spec, then **ask me any clarifying questions in one batch** and propose the architecture + DB schema before writing code.
 - Verify external API details (Canvas, ElevenLabs, Telegram Bot API, Anthropic) against current docs instead of guessing.
-- Write tests for the planner, grade calculator, Canvas client (mocked), and diffing logic.
+- Write tests for the planner, grade calculator, Canvas client (mocked), diffing logic, and prompt-size budgets per LLM call type.
 - Provide a `--dry-run` mode that uses fixture data instead of real APIs.
 - Keep the code clean and documented — this is also a portfolio project for internship applications.
 

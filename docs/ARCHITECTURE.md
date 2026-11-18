@@ -1,6 +1,6 @@
-# Study Agent — Architecture & DB Schema (proposal v1, 2026-11-18)
+# Study Agent — Architecture & DB Schema (v2, 2026-11-18)
 
-Status: **awaiting approval**. Nothing below is implemented yet.
+Status: v1 approved and M1 implemented. **v2 adds the token-efficiency design (§11, SPEC §9a) — awaiting approval.**
 
 ## 1. Guiding decisions
 
@@ -13,7 +13,8 @@ Status: **awaiting approval**. Nothing below is implemented yet.
 | D5 | **Canvas read-only is enforced at transport level**: the client's single `_request()` raises `ReadOnlyViolation` for any method ≠ GET, and an httpx event hook re-checks every outgoing request (including redirects). | Rule 3.2 — impossible to bypass from higher layers. httpx also drops `Authorization` on cross-origin redirects (Canvas file downloads redirect to a file host), so the token never leaks. |
 | D6 | **Plan changes go through `proposals`**; only the Telegram callback handler can call `apply_proposal()`. The LLM has `propose_*` tools but no apply tool. | Rule 3.3 enforced structurally. |
 | D7 | **Runtime settings live in the DB** (`settings` table) layered over `.env` defaults. Cap/window/etc. can be changed by discussing with the agent → it creates a *settings proposal* → you tap ✅. Non-negotiables are `locked` and only change via `/settings`. | Your answers 1–2 + rule 3.5. |
-| D8 | **Brain = hand-written Claude tool-use loop** (`AsyncAnthropic`, `tool_choice=auto`), not the SDK's beta tool runner. | We need per-step budget checks, a hard step limit, cost accounting and confirmation gates inside the loop; an explicit loop is also easier to read for a portfolio. |
+| D8 | **Brain = hand-written Claude tool-use loop** (`AsyncAnthropic`, `tool_choice=auto`), not the SDK's beta tool runner. | We need per-step budget checks, a hard step limit, per-call model routing, prompt-size guards, cost accounting and confirmation gates inside the loop; an explicit loop is also easier to read for a portfolio. |
+| D11 | **Haiku by default, Sonnet by rule.** Model choice is a pure function of (command, job type, detected intent, budget state); no LLM call decides routing. Haiku may hand off via an `escalate` tool. | ~4× cheaper per typical day than Sonnet-for-chat (§11.8), and testable. |
 | D9 | **Search behind a `Retriever` protocol**; v1 = SQLite FTS5 BM25. | Embeddings can be added later without touching tools. |
 | D10 | **`--dry-run`**: Canvas/ElevenLabs replaced by fixture-backed fakes (`fixtures/*.json`), Telegram replaced by a console sink; LLM uses the real API if a key exists, else a scripted stub. Plus a small CLI (`python -m agent.cli plan|sync|need|grades --dry-run`) for demos. | Spec §12; also lets me show you milestone demos before your bot/keys exist. |
 
@@ -21,7 +22,7 @@ Status: **awaiting approval**. Nothing below is implemented yet.
 
 Python 3.12 · uv (deps + lockfile) · aiogram 3 · APScheduler 3.x · httpx · SQLAlchemy 2 (async) + aiosqlite · Alembic (SQLite batch mode) · pydantic-settings · anthropic · pypdf/pdfplumber, python-pptx, python-docx · ffmpeg · pytest, pytest-asyncio, respx, time-machine · ruff.
 
-LLM: `AGENT_MODEL=claude-sonnet-5-5` (conversation loop), `CHEAP_MODEL=claude-haiku-5-5` (summaries, quiz generation, check-in parsing). Prompt caching on the frozen system prompt + tool list; the volatile per-turn context goes after the cache breakpoint. Server-side refusal fallback enabled. Cost is computed from `usage` × a configurable price table → `llm_usage`.
+LLM: `CHEAP_MODEL=claude-haiku-5-5` by default, `SMART_MODEL=claude-sonnet-5-5` for escalations only; full design in §11.
 
 ## 3. Layout
 
@@ -113,7 +114,7 @@ All `*_at` columns are UTC. `id` is an integer PK unless noted; Canvas entities 
 | `courses` | `id` (canvas), `name`, `course_code`, `current_score`, `current_grade`, `apply_group_weights` bool, `syllabus_html`, `content_hash`, `synced_at` |
 | `assignment_groups` | `id` (canvas), `course_id` FK, `name`, `group_weight`, `rules_json`, `content_hash` |
 | `assignments` | `id` (canvas), `course_id` FK, `group_id` FK, `name`, `due_at`, `points_possible`, `html_url`, `submission_state`, `submitted_at`, `score`, `grade`, `grader_comment_count`, `is_missing`, `stats_json` (mean/min/max), `user_state` (null/done/ignored), `content_hash`, `synced_at` |
-| `announcements` | `id` (canvas), `course_id` FK, `title`, `message_html`, `posted_at`, `html_url`, `summary_ru` |
+| `announcements` | `id` (canvas), `course_id` FK, `title`, `message_html`, `posted_at`, `html_url`, `summary_ru` (set once, only if text > 500 chars) |
 | `conversations` | `id` (canvas), `subject`, `last_message`, `last_message_at`, `workflow_state`, `content_hash` |
 | `course_files` | `id`, `canvas_file_id` (nullable, unique), `course_id` FK, `display_name`, `content_type`, `size`, `canvas_updated_at`, `source` (files_api/module_item/telegram_upload), `kind` (lecture/tutorial/past_paper/other), `local_path`, `sha256`, `index_state` (pending/indexed/failed/unsupported), `indexed_at` |
 | `sync_state` | `scope` PK (e.g. `assignments:123`), `initialized` bool, `last_success_at`, `last_error`, `consecutive_failures` |
@@ -144,7 +145,11 @@ Plan versioning: applying a version replaces only **future `planned`** blocks; p
 | table | columns |
 |---|---|
 | `messages` | `id`, `role`, `content_json`, `via` (text/voice/system), `created_at` |
-| `llm_usage` | `id`, `at`, `model`, `purpose`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd` |
+| `llm_usage` | `id`, `at`, `model`, `purpose` (call type), `route_reason`, `batch` bool, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_5m_tokens`, `cache_write_1h_tokens`, `cost_usd`, `prefix_key` (toolset profile + model, for TTL analysis) |
+| `conversation_summary` | `id` = 1 (single row), `text`, `covers_until_message_id`, `updated_at` |
+| `quiz_questions` | `id`, `topic_id` FK, `question_json` (stem, options/answer, explanation, citation), `source_chunk_ids`, `origin` (batch/on_demand), `times_used`, `last_used_at`, `retired` bool, `created_at` |
+| `llm_batches` | `id`, `anthropic_batch_id`, `purpose`, `status` (submitted/ended/failed/consumed), `request_count`, `submitted_at`, `ended_at` |
+| `stt_transcripts` | `audio_sha256` PK, `text`, `model`, `created_at` |
 | `chunks` | `id`, `file_id` FK, `course_id` FK, `ordinal`, `locator` ("p. 12" / "slide 7"), `text` |
 | `chunks_fts` | FTS5 virtual table (`text`, external content = `chunks`, unicode61 tokenizer), kept in sync by triggers |
 
@@ -157,14 +162,92 @@ Debt and streaks are derived (queries/views), not stored.
 | Whitelist | aiogram *outer* middleware on every update type; non-owner updates dropped + logged without content. |
 | Canvas read-only | `CanvasClient._request()` + httpx request hook; unit test asserts POST/PUT/PATCH/DELETE raise. |
 | Plan changes need confirmation | No apply tool exists; `apply_proposal()` only reachable from the callback router; `small_auto` path limited to one missed block. |
-| Budgets | Step counter in the loop; `BudgetGuard` checks today's `llm_usage` sum before every API call; over budget → templated reply, templated notifications keep working. |
+| Budgets | Step counter in the loop; `BudgetGuard` reads today's `llm_usage` sum before every API call: ≥ 80 % warn once, ≥ 100 % Haiku-only + templates, ≥ 150 % no LLM until midnight HKT; templated notifications always work. `PromptGuard` enforces per-call-type input budgets and the Haiku 100K ceiling. |
 | Non-negotiables | `settings.is_locked`; planner validators run on every candidate plan and reject violations (tests for each). |
 | Secrets | `SecretStr` in config, logging redaction filter, `.env` in `.gitignore`, no secrets in fixtures. |
 
 ## 9. Testing
 
-Tests first for the pure-logic core: planner (priority, slots, allocation, non-negotiables, feasibility, undo), grade calculator, Canvas client (respx: pagination, 401/403, read-only guard), differ/first-sync seeding, deadline ladder + quiet hours. Target ≥ 80 % coverage on `planner/`, `grades/`, `canvas/`, `notify/`; Telegram handlers get thin smoke tests.
+Tests first for the pure-logic core: planner (priority, slots, allocation, non-negotiables, feasibility, undo), grade calculator, Canvas client (respx: pagination, 401/403, read-only guard), differ/first-sync seeding, deadline ladder + quiet hours, **router decisions, prompt-size budgets per call type, byte-stability of tools/system prompt, cost accounting**. Target ≥ 80 % coverage on `planner/`, `grades/`, `canvas/`, `notify/`; Telegram handlers get thin smoke tests.
 
 ## 10. Deployment
 
 `Dockerfile` (python:3.12-slim + ffmpeg, non-root user) + `docker-compose.yml` (one service, `restart: unless-stopped`, `./data` volume for SQLite + files, `.env` via `env_file`). Until a VPS exists, run locally with `uv run python -m agent` (macOS `caffeinate` to stop sleep). For real 24/7 pings a small VPS is needed (1 vCPU / 1–2 GB RAM is plenty).
+
+## 11. LLM cost design (SPEC §9a)
+
+### 11.1 Where the LLM is (and isn't) used
+
+| No LLM (templates / pure Python) | LLM |
+|---|---|
+| priorities, plan, replanning, feasibility, grade calc, deadline ladder, diffing; all notifications; `/today` `/plan` `/progress` `/deadlines` `/grades` `/need` `/usage` | free-form chat & voice, plan-change negotiation, plan write-up, check-in parsing, quiz generation/grading, announcement summaries (> 500 chars), topic discovery, diagnostic analysis |
+
+### 11.2 Routing (`brain/router.py`, pure function, unit-tested)
+
+| Trigger | Model | Toolset profile |
+|---|---|---|
+| free text, default | Haiku | `chat` |
+| free text matching plan intent (план, перенес*, сдвин*, забью, отмени, «верни как было», pending proposal open) | Sonnet | `plan` |
+| free text matching material intent (объясни, что такое, как работает, почему, a known topic/term) — Haiku first; Sonnet if multi-part or after `escalate` | Haiku → Sonnet | `material` |
+| grades/deadlines questions | Haiku | `grades` |
+| nightly plan write-up, diagnostic analysis, topic discovery | Sonnet | none (single structured call) |
+| check-in parse, summaries, quiz gen/grading | Haiku | none |
+| `escalate(reason)` tool call, or Haiku `refusal` | Sonnet, same profile | — |
+| budget ≥ 100 % | Haiku only (Sonnet routes downgrade; user told) | — |
+
+### 11.3 Request layout & caching
+
+```
+tools (profile, sorted, deterministic JSON)        ┐
+system prompt (static, no dates)                   │ byte-stable per (model, profile)
+static profile: targets, cutoffs, agreements       ┘ ← explicit cache_control (CACHE_TTL)
+rolling summary + last 6–8 messages (plain text)     ← automatic cache_control (moves forward)
+newest user turn = dynamic context block + message
+```
+- Caches are per model and per profile: 2 models × 4 profiles = at most 8 warm prefixes; each prefix is ~3–4K tokens, above the 512-token minimum for both models.
+- Agreements change rarely; changing one re-writes that prefix once.
+- History holds plain text only (no tool/thinking blocks), so cross-turn history is never "edited" in a way that invalidates cached thinking; within a turn the tool loop is append-only.
+- TTL: start on 5m. `/usage cache` replays the logged request gaps per `prefix_key` and prices both TTLs; switch when the data says so (expected: 1h only pays off if ≥ 3 requests share a prefix within an hour with gaps > 5 min).
+
+### 11.4 Per-call-type budgets (asserted in tests)
+
+| Call type | Model | Thinking | `max_tokens` | Input budget (tokens) |
+|---|---|---|---|---|
+| `chat_turn` (per step) | Haiku | low effort | 1,200 | ≤ 12K (prefix ≤ 4K, context ≤ 1.5K, history ≤ 2.5K, tool results ≤ 1.5K/step) |
+| `escalated_turn` (per step) | Sonnet | low effort | 2,500 | ≤ 16K (+ RAG ≤ 2K) |
+| `plan_writeup` | Sonnet | low effort | 1,200 | ≤ 8K |
+| `checkin_parse` | Haiku | off | 600 | ≤ 3K |
+| `history_summary` | Haiku | off | 400 | ≤ 4K |
+| `announcement_summary` | Haiku | off | 300 | ≤ 3K (text truncated) |
+| `quiz_generate` (Batch) | Haiku | low effort | 1,500 | ≤ 4K |
+| `answer_grade` | Haiku | off | 300 | ≤ 2K |
+| `diagnostic_analysis` | Sonnet | medium | 2,000 | ≤ 10K |
+| `topic_discovery` (Batch) | Sonnet | medium | 3,000 | ≤ 12K |
+
+Token counts are estimated locally with a conservative estimator (UTF-8 bytes ÷ 3, which over-counts Russian text) and cross-checked against `usage.input_tokens` in logs. Over budget → truncate in order: oldest history, RAG chunks, tool-result tails. Any Haiku request estimated ≥ 90K raises before sending (backstop for the 100K price step).
+
+Tool results go through per-tool serialisers that keep only needed fields and cap length (e.g. deadlines: name, course code, due HKT, status — max 15 rows).
+
+### 11.5 Reuse & batching
+- `quiz_questions` is a per-topic bank: verification quizzes draw unused/least-used questions first; a nightly job (02:30) submits one Message Batch for tomorrow's planned topics whose bank is short; results are collected by the 1-minute tick. If a block ends before the batch is ready → one on-demand Haiku call.
+- Topic discovery and diagnostic-question generation run as Batches during setup.
+- STT: transcript cached by audio SHA-256. TTS: only on request / voice mode, gist ≤ 300 chars.
+
+### 11.6 Agent loop
+Step limit `MAX_AGENT_STEPS`; independent tool calls run concurrently with `asyncio.gather` and are returned in one message; the loop ends on the first `end_turn`. Every step passes `PromptGuard` and `BudgetGuard` first.
+
+### 11.7 Accounting
+Each call writes one `llm_usage` row (cost from a configurable price table, batch at 50 %). `/usage` shows today / 7 days by purpose and model, cache hit rate, and budget state.
+
+### 11.8 Estimated cost per day (Claude API only; ElevenLabs is billed separately)
+
+Assumptions: prefix 3.5K tokens, per-turn tail 2.5K, Haiku chat turn = 2 calls, Sonnet turn = 3 calls with RAG 2K, 7 study blocks/day, prices Haiku $0.10/$0.50, Sonnet $2/$10 per MTok, cache read 0.1×/0.05×, 5-min write 1.25×, Batches 50 %.
+
+| Day | Haiku chat turns | Sonnet turns | Est. cost |
+|---|---|---|---|
+| light | 10 | 0 | **≈ $0.03** |
+| typical | 25 | 4 | **≈ $0.25** |
+| heavy | 50 | 10 | **≈ $0.58** |
+| one-time setup | topic discovery + diagnostic | | **≈ $0.19** |
+
+Sonnet escalations are ~80 % of a typical day's cost. For comparison, the v1 design (Sonnet for all chat) is ≈ $1.08 on a typical day. Nov 19 → Dec 14 at the typical rate ≈ **$7 total**. Main uncertainty: thinking tokens (billed as output) — if they double output tokens, a typical day is ≈ $0.40. `DAILY_LLM_BUDGET_USD=2.0` therefore acts as a safety net, not a constraint.
