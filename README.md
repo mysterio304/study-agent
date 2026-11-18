@@ -4,9 +4,10 @@ A personal AI agent that lives in Telegram, reads my Canvas LMS (read-only), and
 enforces final-exam preparation**. Telegram is only the interface — the core is a Claude
 tool-use agent plus a deterministic planner, with persistent memory and proactive behaviour.
 
-> Status: **Milestone 1 — skeleton** (config, DB, owner whitelist, read-only Canvas client,
-> exam ↔ course mapping, Docker). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design
-> and the milestone plan.
+> Status: **Milestone 2 — agent loop + finals planner MVP.** Joint plan for four exams,
+> proposals with confirmation + undo, block pings, evening check-in, nightly replanning, and a
+> cost-aware Claude agent (Haiku by default, Sonnet by rule, prompt caching, budgets).
+> See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the milestone plan.
 
 ## Highlights
 
@@ -16,8 +17,12 @@ tool-use agent plus a deterministic planner, with persistent memory and proactiv
 - **Owner-only bot** — an outer aiogram middleware drops every update not from the owner.
 - **UTC everywhere** — a custom SQLAlchemy type rejects naive datetimes; local time (HKT) only
   at the edges.
-- **Deterministic planner, LLM for conversation** — the model proposes, code enforces
-  (from Milestone 2).
+- **Deterministic planner, LLM for conversation** — priorities, slots, phases and feasibility
+  are pure, tested Python; the model explains and proposes, and a plan changes only when you
+  press a button. Replans are anchored to the current plan, so following it changes nothing.
+- **Token-efficient by design** — rule-based model routing, byte-stable cached prefixes per
+  toolset profile, compact context, per-call-type token budgets asserted in tests, Batches for
+  offline work, per-call cost accounting with a daily budget (`/usage`).
 - **`--dry-run`** — runs on synthetic fixtures without any external API.
 
 ## Quick start (local)
@@ -28,6 +33,7 @@ Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/).
 uv sync                                   # install deps
 uv run pytest                             # run tests
 uv run python -m agent.cli map --dry-run  # demo: seeded finals + suggested course mapping
+uv run python -m agent.cli plan --dry-run # demo: topics → first joint plan → pings → replan → undo
 ```
 
 ### Run against real services
@@ -37,7 +43,20 @@ uv run python -m agent.cli map --dry-run  # demo: seeded finals + suggested cour
    - `TELEGRAM_OWNER_ID` — your numeric id (e.g. from @userinfobot);
    - `CANVAS_TOKEN` — Canvas → Account → Settings → *New Access Token*;
    - `ANTHROPIC_API_KEY`.
-2. `uv run python -m agent` — the bot starts long-polling; send `/start` to map exams to courses.
+2. `uv run python -m agent` — the bot starts long-polling; send `/start`: map exams to courses →
+   review discovered topics → rate your level per topic → confirm the first plan.
+
+### Commands
+
+| Command | What it does (LLM?) |
+|---|---|
+| `/today`, `/plan`, `/progress` | Today / next 3 days / topic levels — templates, no LLM |
+| `/usage` | LLM spend today and 7 days, by purpose and model, cache hit rate |
+| `/undo` | One-tap proposal to restore the previous plan version |
+| `/replan` | Recompute the plan from actual progress (proposal) |
+| `/checkin` | Evening check-in now (answer in free text) |
+| `/settings [key value]` | Show settings; change one explicitly (the only way to change 🔒 rules) |
+| free text | The agent: Haiku by default, Sonnet for plan negotiation / complex material |
 
 `uv run python -m agent --dry-run` uses fixture Canvas data and a separate `data/dry_run.db`
 (with Telegram if a token is configured, otherwise it prints a console demo).
@@ -66,9 +85,12 @@ agent/
   core/          clock, time helpers, secret-redacting logging
   db/            models, UTC type, Alembic migrations
   canvas/        read-only client, endpoint layer, fixture fake, sync
-  telegram/      whitelist middleware, /start wizard
-  prep/          exam seed, course mapping
-  planner/ brain/ notify/ files/ voice/ grades/   (upcoming milestones)
+  brain/         LLM client (guards, caching, accounting), router, tools, agent loop, batches
+  planner/       priority, slots, joint allocator, validators, feasibility, proposals/undo
+  prep/          exam seed, course mapping, topic discovery/review, check-in, settings
+  notify/        scheduled jobs: tick (pings, reminders), morning, evening, nightly replan
+  telegram/      whitelist middleware, /start wizard, commands, chat, cards
+  files/ voice/ grades/   (upcoming milestones)
 tests/           pytest + respx (HTTP mocked)
 fixtures/        synthetic data for --dry-run
 ```

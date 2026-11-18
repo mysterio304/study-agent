@@ -1,0 +1,131 @@
+"""Free-form chat, proposal buttons and block buttons."""
+
+from __future__ import annotations
+
+import logging
+import re
+
+from aiogram import F, Router
+from aiogram.enums import ChatAction
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import CallbackQuery, Message
+
+from agent.brain.llm import BudgetExceeded
+from agent.flows import Services, apply_choice, send_proposal
+from agent.planner.blocks import BlockError, auto_move_missed, set_block_status
+from agent.planner.render import fmt_day
+from agent.planner.service import load_inputs
+from agent.prep import checkin
+from agent.telegram.format import h
+from agent.telegram.keyboards import BlockCb, CheckinCb, PropCb
+
+log = logging.getLogger(__name__)
+router = Router(name="chat")
+
+_ALLOWED_TAG = re.compile(r"&lt;(/?)(b|i)&gt;")
+
+
+def safe_html(text: str) -> str:
+    """Escape model output for parse_mode=HTML and re-allow only balanced <b>/<i>.
+    Unbalanced or mis-nested tags (e.g. output cut at max_tokens) → tags are dropped."""
+    escaped = _ALLOWED_TAG.sub(r"<\1\2>", h(text))
+    stack: list[str] = []
+    for closing, tag in re.findall(r"<(/?)(b|i)>", escaped):
+        if not closing:
+            stack.append(tag)
+        elif not stack or stack.pop() != tag:
+            return h(re.sub(r"</?(b|i)>", "", text))
+    return escaped if not stack else h(re.sub(r"</?(b|i)>", "", text))
+
+
+@router.callback_query(PropCb.filter())
+async def on_proposal(query: CallbackQuery, callback_data: PropCb, svc: Services) -> None:
+    status = await apply_choice(svc, callback_data.id, callback_data.opt)
+    await query.answer(status[:190])
+    if isinstance(query.message, Message):
+        await query.message.edit_reply_markup(reply_markup=None)
+        await query.message.answer(h(status))
+
+
+@router.callback_query(BlockCb.filter())
+async def on_block(query: CallbackQuery, callback_data: BlockCb, svc: Services) -> None:
+    action, reply = callback_data.action, ""
+    async with svc.sessionmaker() as s:
+        try:
+            if action == "start":
+                await set_block_status(s, callback_data.id, "started", svc.clock)
+                reply = "Поехали! 50 минут фокуса."
+            elif action == "done":
+                await set_block_status(s, callback_data.id, "done", svc.clock)
+                reply = "Записал ✅"
+            elif action == "fail":
+                await set_block_status(s, callback_data.id, "skipped", svc.clock)
+                reply = "Ок, блок ушёл в долг — ночью перераспределю."
+            elif action == "move":  # the student's own explicit request → no extra confirmation
+                inputs = await load_inputs(s, svc.settings, svc.clock)
+                moved = await auto_move_missed(s, callback_data.id, inputs, svc.clock)
+                if moved:
+                    when = moved.starts_at.astimezone(svc.settings.zone)
+                    reply = f"Перенёс на {fmt_day(when.date())} {when:%H:%M}."
+                else:
+                    reply = "Свободного слота сегодня/завтра нет — блок ушёл в долг."
+                    await set_block_status(s, callback_data.id, "skipped", svc.clock)
+            await s.commit()
+        except BlockError as exc:
+            reply = str(exc)
+    await query.answer(reply[:190])
+    if isinstance(query.message, Message):
+        await query.message.edit_reply_markup(reply_markup=None)
+        await query.message.answer(reply)
+
+
+@router.callback_query(CheckinCb.filter())
+async def on_checkin_later(query: CallbackQuery) -> None:
+    await query.answer("Ок, спрошу утром.")
+
+
+@router.message(F.text & ~F.text.startswith("/"))
+async def on_text(message: Message, svc: Services) -> None:
+    await handle_user_text(message, svc, message.text or "", via="text")
+
+
+async def handle_user_text(message: Message, svc: Services, text: str, *, via: str) -> None:
+    """Shared by text and (in M4) voice: check-in answer first, otherwise the agent."""
+    if svc.agent is None or svc.llm is None:
+        await message.answer(
+            "Агент не настроен (нет ANTHROPIC_API_KEY). Команды /today, /plan, /progress работают."
+        )
+        return
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    try:
+        if await _try_checkin(message, svc, text):
+            return
+        result = await svc.agent.handle(text, via=via)
+    except Exception:
+        log.exception("Agent turn failed")
+        await message.answer("Что-то пошло не так на моей стороне. Попробуй ещё раз через минуту.")
+        return
+    try:
+        await message.answer(safe_html(result.text))
+    except TelegramBadRequest:
+        log.warning("Telegram rejected formatted reply; sending plain text")
+        await message.answer(h(result.text), parse_mode=None)
+    finally:
+        for pid in result.proposals:  # proposals are already in the DB — always show the cards
+            await send_proposal(svc, pid)
+
+
+async def _try_checkin(message: Message, svc: Services, text: str) -> bool:
+    """If a check-in is open and the text looks like a report, apply it. Returns True if handled."""
+    assert svc.llm is not None
+    async with svc.sessionmaker() as s:
+        day = await checkin.awaiting(s, svc.clock)
+    if day is None or not checkin.looks_like_report(text):
+        return False
+    try:
+        outcome = await checkin.handle_answer(svc.sessionmaker, svc.llm, svc.clock, day, text)
+    except BudgetExceeded:
+        return False  # the agent replies with the over-budget template
+    if outcome.is_report:
+        await message.answer(h(outcome.summary))
+    return outcome.is_report

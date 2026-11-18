@@ -1,0 +1,8 @@
+[
+  {"id": 9001, "name": "Week 4: Transport layer", "position": 4,
+   "items": [{"title": "Lecture 4 - TCP.pdf", "type": "File", "content_id": 5501},
+             {"title": "Tutorial 4", "type": "Page", "content_id": null}]},
+  {"id": 9002, "name": "Week 7: Routing", "position": 7,
+   "items": [{"title": "Lecture 7 - Routing algorithms.pdf", "type": "File", "content_id": 5502},
+             {"title": "Past paper 2024 Final.pdf", "type": "File", "content_id": 5503}]}
+]

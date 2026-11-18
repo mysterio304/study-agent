@@ -1,0 +1,50 @@
+{
+  "Computer Networks": {
+    "final_weight": 0.7,
+    "topics": [
+      {"name": "Network fundamentals & layering", "importance": 2, "effort_hours": 2, "sources": ["Week 1"]},
+      {"name": "Application layer (HTTP, DNS)", "importance": 2, "effort_hours": 3, "sources": ["Week 2"]},
+      {"name": "Transport layer & UDP", "importance": 2, "effort_hours": 2, "sources": ["Week 3"]},
+      {"name": "TCP reliability & congestion control", "importance": 3, "effort_hours": 5, "sources": ["Week 4", "Week 5"]},
+      {"name": "Network layer & IP addressing", "importance": 3, "effort_hours": 4, "sources": ["Week 6"]},
+      {"name": "Routing algorithms", "importance": 3, "effort_hours": 4, "sources": ["Week 7"]},
+      {"name": "Link layer & MAC protocols", "importance": 2, "effort_hours": 3, "sources": ["Week 9"]},
+      {"name": "Wireless & mobile networks", "importance": 1, "effort_hours": 2, "sources": ["Week 11"]},
+      {"name": "Network security basics", "importance": 2, "effort_hours": 2, "sources": ["Week 12"]}
+    ]
+  },
+  "Design and Analysis of Algorithms": {
+    "final_weight": 0.6,
+    "topics": [
+      {"name": "Asymptotic analysis & recurrences", "importance": 2, "effort_hours": 2, "sources": ["Week 1"]},
+      {"name": "Divide and conquer", "importance": 2, "effort_hours": 3, "sources": ["Week 2"]},
+      {"name": "Greedy algorithms", "importance": 3, "effort_hours": 4, "sources": ["Week 3", "Week 4"]},
+      {"name": "Dynamic programming", "importance": 3, "effort_hours": 6, "sources": ["Week 5", "Week 6"]},
+      {"name": "Graph algorithms (BFS/DFS, MST, shortest paths)", "importance": 3, "effort_hours": 5, "sources": ["Week 7", "Week 8"]},
+      {"name": "Network flow", "importance": 2, "effort_hours": 3, "sources": ["Week 10"]},
+      {"name": "NP-completeness & reductions", "importance": 2, "effort_hours": 3, "sources": ["Week 12"]}
+    ]
+  },
+  "Algebra": {
+    "final_weight": null,
+    "topics": [
+      {"name": "Systems of linear equations", "importance": 2, "effort_hours": 2, "sources": ["Ch 1"]},
+      {"name": "Vector spaces & bases", "importance": 3, "effort_hours": 3, "sources": ["Ch 2"]},
+      {"name": "Linear transformations", "importance": 3, "effort_hours": 3, "sources": ["Ch 3"]},
+      {"name": "Determinants", "importance": 2, "effort_hours": 2, "sources": ["Ch 4"]},
+      {"name": "Eigenvalues & diagonalisation", "importance": 3, "effort_hours": 4, "sources": ["Ch 5"]},
+      {"name": "Inner products & orthogonality", "importance": 2, "effort_hours": 3, "sources": ["Ch 6"]}
+    ]
+  },
+  "Computer Vision for Interactivity (CS4187)": {
+    "final_weight": 0.5,
+    "topics": [
+      {"name": "Image formation & cameras", "importance": 2, "effort_hours": 2, "sources": ["Lecture 1"]},
+      {"name": "Filtering & edge detection", "importance": 3, "effort_hours": 3, "sources": ["Lecture 2"]},
+      {"name": "Features & matching", "importance": 3, "effort_hours": 3, "sources": ["Lecture 3"]},
+      {"name": "Geometry & homography", "importance": 2, "effort_hours": 3, "sources": ["Lecture 5"]},
+      {"name": "Tracking & optical flow", "importance": 2, "effort_hours": 2, "sources": ["Lecture 7"]},
+      {"name": "Deep learning for vision & interaction", "importance": 2, "effort_hours": 3, "sources": ["Lecture 9"]}
+    ]
+  }
+}

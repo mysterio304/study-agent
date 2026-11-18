@@ -110,7 +110,7 @@ def test_redacts_exception_text() -> None:
 
 def test_settings_defaults_and_require_live(monkeypatch: pytest.MonkeyPatch) -> None:
     s = Settings(_env_file=None)
-    assert s.agent_model == "claude-sonnet-5-5"
+    assert s.smart_model == "claude-sonnet-5-5" and s.cheap_model == "claude-haiku-5-5"
     assert s.quiet_hours_range.contains(time(1, 0))
     assert s.morning_time == time(8, 30)
     with pytest.raises(ConfigError) as exc:

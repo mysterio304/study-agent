@@ -44,5 +44,12 @@ extend-exclude = ["agent/db/migrations/versions"]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
 ignore = ["RUF001", "RUF002", "RUF003"]  # Cyrillic text in user-facing strings is intentional
 
+[tool.ruff.lint.pycodestyle]
+max-line-length = 120  # the formatter wraps code at 100; long user-facing strings may reach 120
+
+[tool.ruff.lint.per-file-ignores]
+"agent/brain/context.py" = ["E501"]  # system prompt prose is kept as natural paragraphs
+
 [tool.coverage.run]
 source = ["agent"]
+omit = ["agent/db/migrations/*", "agent/__main__.py"]

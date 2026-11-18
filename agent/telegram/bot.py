@@ -1,17 +1,28 @@
-"""Bot/dispatcher construction. Dependencies are injected into handlers by name via
-dispatcher workflow data (`sessionmaker`, `settings`, ...)."""
+"""Bot/dispatcher construction. The `Services` container is injected into handlers by name."""
 
 from __future__ import annotations
-
-from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 
 from agent.config import Settings
-from agent.telegram import setup_wizard
+from agent.flows import Services
+from agent.telegram import chat, commands, setup_wizard
 from agent.telegram.middleware import OwnerOnlyMiddleware
+
+COMMANDS = [
+    BotCommand(command="today", description="План на сегодня"),
+    BotCommand(command="plan", description="План на 3 дня"),
+    BotCommand(command="progress", description="Прогресс по темам"),
+    BotCommand(command="usage", description="Расход на LLM"),
+    BotCommand(command="undo", description="Вернуть прошлую версию плана"),
+    BotCommand(command="replan", description="Пересчитать план"),
+    BotCommand(command="checkin", description="Вечерний check-in"),
+    BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="start", description="Мастер настройки"),
+]
 
 
 def build_bot(settings: Settings) -> Bot:
@@ -22,9 +33,9 @@ def build_bot(settings: Settings) -> Bot:
     )
 
 
-def build_dispatcher(settings: Settings, **deps: Any) -> Dispatcher:
+def build_dispatcher(settings: Settings, svc: Services) -> Dispatcher:
     assert settings.telegram_owner_id is not None
-    dp = Dispatcher(settings=settings, **deps)
+    dp = Dispatcher(svc=svc)
     dp.update.outer_middleware(OwnerOnlyMiddleware(settings.telegram_owner_id))
-    dp.include_router(setup_wizard.router)
+    dp.include_routers(setup_wizard.router, commands.router, chat.router)
     return dp

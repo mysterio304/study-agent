@@ -1,8 +1,8 @@
 """Entrypoint: `python -m agent [--dry-run]`.
 
-Live mode needs Telegram/Canvas/Anthropic credentials in .env. Dry-run uses fixture Canvas
-data and a separate database; if a Telegram token is configured the bot still runs, otherwise
-a console demo is printed instead.
+Live mode needs Telegram/Canvas/Anthropic credentials in .env. Dry-run uses fixture Canvas data
+and a separate database; if a Telegram token is configured the bot still runs, otherwise a
+console demo is printed instead.
 """
 
 from __future__ import annotations
@@ -10,38 +10,83 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from agent.app import App, build_app
 from agent.config import ConfigError, get_settings
-from agent.telegram.bot import build_bot, build_dispatcher
+from agent.flows import Services
+from agent.notify import jobs
+from agent.telegram.bot import COMMANDS, build_bot, build_dispatcher
+from agent.telegram.notifier import TelegramNotifier
 
 log = logging.getLogger("agent")
+NIGHTLY_REPLAN = (3, 30)
 
 
-def _schedule_jobs(app: App) -> AsyncIOScheduler:
-    scheduler = AsyncIOScheduler(timezone=app.settings.zone)
+def _guard(name: str, job: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[None]]:
+    async def run() -> None:
+        try:
+            await job()
+        except Exception:
+            log.exception("Job %s failed", name)
+
+    return run
+
+
+def _schedule_jobs(app: App, svc: Services) -> AsyncIOScheduler:
+    s = app.settings
+    scheduler = AsyncIOScheduler(timezone=s.zone)
+    common = {"max_instances": 1, "coalesce": True, "misfire_grace_time": 300}
     scheduler.add_job(
-        app.sync_canvas,
+        _guard("canvas_sync", app.sync_canvas),
         "interval",
-        minutes=app.settings.canvas_poll_minutes,
+        minutes=s.canvas_poll_minutes,
         id="canvas_sync",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
+        **common,
+    )
+    scheduler.add_job(
+        _guard("tick", lambda: jobs.tick(svc)), "interval", minutes=1, id="tick", **common
+    )
+    scheduler.add_job(
+        _guard("morning", lambda: jobs.morning(svc)),
+        "cron",
+        hour=s.morning_time.hour,
+        minute=s.morning_time.minute,
+        id="morning",
+        **common,
+    )
+    scheduler.add_job(
+        _guard("evening", lambda: jobs.evening(svc)),
+        "cron",
+        hour=s.evening_time.hour,
+        minute=s.evening_time.minute,
+        id="evening",
+        **common,
+    )
+    scheduler.add_job(
+        _guard("nightly", lambda: jobs.nightly(svc)),
+        "cron",
+        hour=NIGHTLY_REPLAN[0],
+        minute=NIGHTLY_REPLAN[1],
+        id="nightly",
+        **common,
     )
     return scheduler
 
 
 async def _run_bot(app: App) -> None:
     bot = build_bot(app.settings)
-    dp = build_dispatcher(app.settings, sessionmaker=app.sessionmaker, clock=app.clock)
-    scheduler = _schedule_jobs(app)
+    assert app.settings.telegram_owner_id is not None
+    svc = app.build_services(TelegramNotifier(bot, app.settings.telegram_owner_id))
+    dp = build_dispatcher(app.settings, svc)
+    scheduler = _schedule_jobs(app, svc)
     await app.sync_canvas()  # first sync seeds state before the bot starts answering
     scheduler.start()
     try:
-        log.info("Bot started (dry_run=%s)", app.dry_run)
+        await bot.set_my_commands(COMMANDS)
+        log.info("Bot started (dry_run=%s, llm=%s)", app.dry_run, svc.llm is not None)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         scheduler.shutdown(wait=False)
@@ -56,11 +101,10 @@ async def _amain(dry_run: bool) -> None:
         if settings.telegram_bot_token and settings.telegram_owner_id:
             await _run_bot(app)
         else:
-            from agent.cli import demo_mapping
+            from agent.cli import demo_plan
 
             log.warning("No Telegram credentials; running console demo instead of the bot")
-            await app.sync_canvas()
-            await demo_mapping(app)
+            await demo_plan(app)
 
 
 def main() -> None:

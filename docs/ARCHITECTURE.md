@@ -1,6 +1,6 @@
 # Study Agent — Architecture & DB Schema (v2, 2026-11-18)
 
-Status: v1 approved and M1 implemented. **v2 adds the token-efficiency design (§11, SPEC §9a) — awaiting approval.**
+Status: v1 and v2 approved; M1 and M2 implemented.
 
 ## 1. Guiding decisions
 
@@ -93,6 +93,17 @@ defaults: w_s .25, w_g .30, w_i .15, w_u .20, w_f .10
 5. **Debt**: skipped blocks of the current version that are not yet re-placed; shown in morning/evening messages and redistributed by the next replan.
 
 Plan horizon: today → Dec 14, regenerated each night; only today + tomorrow are shown as "firm".
+
+**Replan stability.** A replan is seeded with (a) the current future blocks as an *anchor* — a
+small score bonus for keeping the same topic in the same slot/day — and (b) each exam's last
+block date, so the keep-warm rule does not fire spuriously. Logged progress and spaced-repetition
+state feed the same virtual-progress model the planner uses while allocating, so if the student
+follows the plan exactly, the nightly replan changes 0 blocks (tested). Proposal cards state how
+many blocks change.
+
+**Non-negotiables as flags.** `eve_review_only`, `no_new_topics_eve`, `protected_sleep` and
+`no_blocks_during_exams` default to on, are enforced by the allocator *and* re-checked by the
+validators, and can only be switched via `/settings <key> off` (never via chat/tools).
 
 ## 6. Grade calculator
 

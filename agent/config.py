@@ -11,7 +11,7 @@ from functools import lru_cache
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from agent.core.timeutil import TimeRange, parse_hhmm, parse_time_range
@@ -22,7 +22,9 @@ class ConfigError(RuntimeError):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", populate_by_name=True
+    )
 
     # --- Telegram ---------------------------------------------------------------------------
     telegram_bot_token: SecretStr | None = None
@@ -41,8 +43,11 @@ class Settings(BaseSettings):
 
     # --- Anthropic ----------------------------------------------------------------------------
     anthropic_api_key: SecretStr | None = None
-    agent_model: str = "claude-sonnet-5-5"
-    cheap_model: str = "claude-haiku-5-5"
+    cheap_model: str = "claude-haiku-5-5"  # default for everything (SPEC §9a.2)
+    smart_model: str = Field(
+        default="claude-sonnet-5-5", validation_alias=AliasChoices("SMART_MODEL", "AGENT_MODEL")
+    )
+    cache_ttl: Literal["5m", "1h"] = "5m"
 
     # --- Behaviour ----------------------------------------------------------------------------
     tz: str = "Asia/Hong_Kong"
@@ -56,6 +61,7 @@ class Settings(BaseSettings):
     autonomy_mode: Literal["small_auto", "confirm_all"] = "small_auto"
     max_agent_steps: int = Field(default=8, ge=1, le=30)
     daily_llm_budget_usd: float = Field(default=2.0, ge=0)
+    llm_budget_warn_pct: int = Field(default=80, ge=1, le=100)
 
     # --- Storage ------------------------------------------------------------------------------
     database_url: str = "sqlite+aiosqlite:///data/agent.db"

@@ -203,6 +203,8 @@ class Topic(Base):
     last_studied_at: Mapped[datetime | None]
     next_review_at: Mapped[datetime | None]
     review_step: Mapped[int] = mapped_column(Integer, default=0)
+    # Study minutes logged since the level last changed; reduces the planner's remaining effort.
+    progress_min: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class PlanVersion(Base):
@@ -213,7 +215,7 @@ class PlanVersion(Base):
     reason: Mapped[str] = mapped_column(Text)
     proposed_by: Mapped[str] = mapped_column(String(16))  # planner / agent / user / auto
     applied_at: Mapped[datetime | None]
-    snapshot_json: Mapped[list[Any]]
+    snapshot_json: Mapped[dict[str, Any]]  # {"blocks": [...future blocks], "overrides": {...}}
 
 
 class Block(Base):
@@ -354,9 +356,58 @@ class LlmUsage(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     at: Mapped[datetime] = mapped_column(index=True)
     model: Mapped[str] = mapped_column(String(64))
-    purpose: Mapped[str] = mapped_column(String(32))
+    purpose: Mapped[str] = mapped_column(String(32), index=True)  # call type
+    route_reason: Mapped[str | None] = mapped_column(String(64))
+    prefix_key: Mapped[str | None] = mapped_column(String(64))  # model + toolset profile
+    batch: Mapped[bool] = mapped_column(Boolean, default=False)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    cache_write_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_write_5m_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_write_1h_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class ConversationSummary(Base):
+    """Rolling summary of chat history older than the live window (single row, id=1)."""
+
+    __tablename__ = "conversation_summary"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    text: Mapped[str] = mapped_column(Text, default="")
+    covers_until_message_id: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime]
+
+
+class QuizQuestion(Base):
+    """Per-topic question bank; questions are reused before new ones are generated."""
+
+    __tablename__ = "quiz_questions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id"), index=True)
+    question_json: Mapped[dict[str, Any]]
+    source_chunk_ids: Mapped[list[Any] | None]
+    origin: Mapped[str] = mapped_column(String(16))  # batch / on_demand
+    times_used: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime | None]
+    retired: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime]
+
+
+class LlmBatch(Base):
+    __tablename__ = "llm_batches"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    anthropic_batch_id: Mapped[str] = mapped_column(String(64), unique=True)
+    purpose: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default="submitted", index=True)
+    request_count: Mapped[int] = mapped_column(Integer)
+    meta_json: Mapped[dict[str, Any] | None]
+    submitted_at: Mapped[datetime]
+    ended_at: Mapped[datetime | None]
+
+
+class SttTranscript(Base):
+    __tablename__ = "stt_transcripts"
+    audio_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    text: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime]
